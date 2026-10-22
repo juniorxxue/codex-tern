@@ -1,0 +1,38 @@
+# Dependencies and build output
+/node_modules/
+/dist/
+*.tsbuildinfo
+
+# Local sessions, notes, pasted images, screenshots and QA output
+/.prototype/
+/.local/
+/coverage/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+!.env.*.example
+/.codex/
+.npmrc
+.envrc
+/.direnv/
+/auth.json
+/credentials.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local agent and editor settings
+/.agents/
+/.claude/
+/.idea/
+/.vscode/
+
+# Logs and editor/OS files
+*.log
+.DS_Store
+Thumbs.db
+*.swp
+*.swo

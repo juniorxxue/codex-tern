@@ -1,0 +1,828 @@
+/** @jsxImportSource @stencil-hq/tern */
+import { connect, css, html, type Session, type Surface, type PickerItem, type Key } from '@stencil-hq/tern';
+import { basename, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { projectRoot } from './project-instance';
+import { isImagePath, loadImage, savePastedImage, pastedImagePaths, type PreviewImage } from './attachments';
+import { readSystemClipboard } from './clipboard/system';
+import { markdownFileLinks } from './clipboard/files';
+import { EnhancedPasteController } from './clipboard/enhanced-paste';
+import { ClipboardInput } from './clipboard/input';
+import { Controller, type DisplayItem, type PendingRequest } from './controller';
+import { FolderSessions } from './folder-sessions';
+import { sessionInUse } from './session-locks';
+import { Draft } from './draft';
+import { Composer } from './composer';
+import { RpcOutcomeUnknown } from './rpc';
+import type { ReasoningEffort } from './generated/ReasoningEffort';
+import type { UserInput } from './generated/v2/UserInput';
+import { Welcome, ComposerFrame } from './omp-views';
+import { ompNode } from './omp-native';
+import { transcriptParts, activitySummary, compactActivity, type TranscriptPart } from './activity';
+import { appearanceStyles } from './appearance';
+import { assistantMarkdown } from './assistant-markdown';
+import { runPluginCommand } from './tern-plugin';
+
+const styles = css`
+  .ct-buttons { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .ct-button { padding: 5px 10px; border-radius: 6px; background: var(--raise); color: var(--t2); }
+  .ct-button:hover { background: var(--l2); color: var(--t1); }
+  .ct-primary { color: var(--accent-ink); }
+  .ct-danger { color: var(--bad); }
+  .ct-request { padding: 12px; border-radius: 10px; background: var(--card); box-shadow: inset 0 0 0 1px var(--l2); }
+  .ct-choice { padding: 8px 10px; border-radius: 6px; background: var(--raise); }
+  .ct-selected { box-shadow: inset 0 0 0 1px var(--accent); }
+  [data-role="ct.nav"] > [data-role="omp.status"] { min-width: 0; flex: 1 1 0; overflow: hidden; }
+  .ct-activity { min-width: 0; padding: 4px 2px; color: var(--t3); }
+  .ct-activity-toggle { display: flex; align-items: center; gap: 7px; width: 100%; padding: 6px 0; text-align: left; color: var(--t3); cursor: pointer; }
+  .ct-activity-toggle:hover { color: var(--t1); }
+  .ct-activity-preview { margin: 2px 0 5px 20px; padding-left: 10px; border-left: 1px solid var(--l2); }
+  .ct-activity-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ct-activity-output { font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; max-height: 4.5em; overflow: hidden; }
+  [data-role="omp.user.images"] { min-width: 0; align-items: flex-start; }
+  [data-role="omp.user.images"] .sf-image { max-width: 100%; border-radius: 8px; overflow: hidden; }
+  [data-role="omp.user.images"] .sf-image img { display: block; max-width: 100%; height: auto; object-fit: contain; }
+  [aria-label="Codex composer controls"] > .sf-place { display: none; }
+`;
+
+export class NativeUI {
+  private readonly clientInstance = randomUUID();
+  private sidebarRequested = false;
+  private composer = new Composer();
+  get draft() { return this.composer.draft; }
+  set draft(value: Draft) { this.composer.draft = value; }
+  dialogDraft = new Draft();
+  get images() { return this.composer.images; }
+  set images(value: readonly string[]) { this.composer.images = value; }
+  private previews = new Map<string, PreviewImage & { blob: string }>();
+  private loadingPreviews = new Set<string>();
+  private pasting = 0;
+  private failedPreviews = new Set<string>();
+  private deferredKeys: Key[] = [];
+  panel: 'history' | 'models' | 'effort' | 'workspace' | 'attach' | 'details' | 'help' | 'diff' | 'menu' | null = null;
+  allThreads = false;
+  historyLoading = false;
+  answerTarget: { requestId: string | number; questionId: string } | null = null;
+  sendMode: 'steer' | 'queue' = 'steer';
+  private renderTimer?: NodeJS.Timeout;
+  private ended = false;
+  private focused = 'dock.body.line.input';
+  private savedDraft: Draft | null = null;
+  private pickerSelected = '';
+  private activityModes = new Map<string, 'expanded' | 'collapsed'>();
+  private readonly folderSessions: FolderSessions;
+  private sessionDrafts = new Map<string, { composer: Composer;
+    answerTarget: NativeUI['answerTarget']; savedDraft: Draft | null }>();
+  private pendingSession?: string;
+  private sidebarNavigation?: { request: string; target: string; pending: boolean };
+  openProject?: (cwd: string, resume?: string) => Promise<boolean>;
+  private readonly projectDirectory: string;
+
+  constructor(readonly c: Controller, readonly session: Session, readonly surface: Surface,
+    readonly enhanced?: EnhancedPasteController, readonly clipboardInput?: ClipboardInput) {
+    surface.stylesheet('codex-tern', styles);
+    surface.stylesheet('codex-tern-appearance', appearanceStyles);
+    this.projectDirectory = c.cwd;
+    this.folderSessions = new FolderSessions(c, () => this.schedule());
+    c.on('change', () => this.schedule());
+  }
+
+  private schedule() {
+    if (this.ended || this.renderTimer) return;
+    this.renderTimer = setTimeout(() => { this.renderTimer = undefined; this.render(); }, 25);
+  }
+  private action(fn: () => Promise<unknown>) { void this.c.act(fn); }
+  private button(label: string, action: () => void, extra = '', disabled = false) {
+    return <html.button key={label} class={`ct-button ${extra}`} aria={label} attrs={{ 'aria-disabled': disabled }}
+      onClick={disabled ? undefined : () => { action(); this.render(); }}>{label}</html.button>;
+  }
+  private focusComposer() { this.focused = 'dock.body.line.input'; this.surface.focus(this.focused); }
+  async openSidebar() {
+    if (this.ended) return;
+    this.sidebarRequested = true; this.render();
+    try { await runPluginCommand('sessions'); }
+    catch { /* The native client remains usable without the optional window plugin. */ }
+    finally { this.sidebarRequested = false; this.schedule(); }
+  }
+  private hasSessionDraft(id: string) {
+    const saved = this.sessionDrafts.get(id);
+    return id === this.c.thread?.id ? !!(this.draft.text || this.images.length || this.answerTarget)
+      : !!(saved?.composer.draft.text || saved?.composer.images.length || saved?.answerTarget);
+  }
+  private async archiveSession(id?: string) {
+    if (!id || !this.folderSessions.contains(id)) throw new Error('This session is no longer in the current folder.');
+    if (this.panel || this.pasting) throw new Error('Finish the paste or close the open dialog before deleting.');
+    if (this.folderSessions.isLocked(id)) throw new Error('This session is open in another client.');
+    if (this.hasSessionDraft(id)) throw new Error('Send or clear this session\'s draft before deleting it.');
+    const rows = this.folderSessions.snapshot.rows;
+    const at = rows.findIndex(row => row.id === id);
+    const replacement = [...rows.slice(at + 1), ...rows.slice(0, at).reverse()].find(row => !row.locked)?.id;
+    if (await this.navigate(() => this.c.archiveThread(id, replacement))) this.sessionDrafts.delete(id);
+  }
+  private async resumeFromSidebar(value?: string) {
+    let id = value;
+    let request: string | undefined;
+    if (value?.startsWith('{')) {
+      try {
+        const action = JSON.parse(value);
+        if (typeof action.id !== 'string' || typeof action.request !== 'string') return;
+        id = action.id; request = action.request;
+      } catch { return; }
+    }
+    if (request) this.sidebarNavigation = { request, target: id!, pending: true };
+    if (id && this.folderSessions.contains(id) && this.c.selecting) {
+      this.pendingSession = value; this.schedule(); return;
+    }
+    try {
+      if (!id || !this.folderSessions.contains(id)) {
+        this.folderSessions.fail('This session is no longer in the current folder.'); return;
+      }
+      await this.openSession(id);
+    } finally {
+      if (request && this.sidebarNavigation?.request === request) this.sidebarNavigation.pending = false;
+      this.schedule();
+    }
+  }
+
+  async openSession(id: string): Promise<boolean> {
+    if (this.folderSessions.isLocked(id)) return false;
+    const thread = this.c.threads.find(t => t.id === id);
+    if (thread && this.openProject && await projectRoot(thread.cwd) !== await projectRoot(this.projectDirectory))
+      return this.openProject(thread.cwd, id);
+    if (this.pasting || this.panel) {
+      this.folderSessions.fail('Finish the paste or close the open dialog before switching.'); return false;
+    }
+    return this.navigate(() => this.c.resume(id), id);
+  }
+
+  async newSession(cwd = this.c.cwd): Promise<boolean> {
+    if (this.pasting) { this.c.notice('Wait for the paste to finish.'); return false; }
+    if (this.openProject && await projectRoot(cwd) !== await projectRoot(this.projectDirectory))
+      return this.openProject(cwd);
+    return this.navigate(() => this.c.newThread(cwd));
+  }
+
+  private async navigate(change: () => Promise<void>, id?: string): Promise<boolean> {
+    const previous = this.c.thread?.id;
+    const composer = this.composer;
+    const answerTarget = this.answerTarget, savedDraft = this.savedDraft;
+    this.folderSessions.clearError();
+    try { await change(); return true; }
+    catch (error) {
+      if (id && sessionInUse(error)) this.folderSessions.markLocked(id);
+      else this.folderSessions.fail(error instanceof Error ? error.message : String(error));
+      return false;
+    }
+    finally {
+      if (previous && this.c.thread?.id !== previous) {
+        this.sessionDrafts.set(previous, { composer, answerTarget, savedDraft });
+        const saved = this.sessionDrafts.get(this.c.thread!.id);
+        this.composer = saved?.composer ?? new Composer();
+        this.answerTarget = saved?.answerTarget ?? null; this.savedDraft = saved?.savedDraft ?? null;
+      }
+      this.render(); this.focusComposer();
+      if (this.pendingSession) {
+        const next = this.pendingSession; this.pendingSession = undefined;
+        void this.resumeFromSidebar(next);
+      }
+    }
+  }
+  private closePanel() { this.panel = null; this.render(); this.focusComposer(); }
+  private openPanel(panel: NonNullable<NativeUI['panel']>) {
+    if (this.pasting) { this.c.notice('Wait for the paste to finish.'); return; }
+    this.panel = panel; this.dialogDraft = new Draft();
+    this.pickerSelected = panel === 'models' ? this.c.model : panel === 'effort' ? this.c.effort
+      : panel === 'history' ? this.c.thread?.id ?? '' : '';
+    if (panel === 'history') {
+      this.historyLoading = true;
+      this.action(async () => { try { await this.c.listThreads(this.allThreads); } finally { this.historyLoading = false; this.render(); } });
+    }
+    if (panel === 'workspace') this.dialogDraft.set(this.c.cwd);
+    this.render();
+    if (panel === 'workspace' || panel === 'attach') {
+      this.focused = 'layer.panel.body.field'; this.surface.focus(this.focused);
+    } else { this.focused = ''; this.surface.focus(null); }
+  }
+
+  private renderItem(entry: DisplayItem) {
+    const i = entry.item;
+    const itemStatus = 'status' in i ? i.status : undefined;
+    const status = itemStatus === 'failed' || itemStatus === 'declined' ? 'error'
+      : itemStatus === 'inProgress' || !entry.done ? 'running' : 'done';
+    if (i.type === 'userMessage') {
+      const content: UserInput[] = i.content ?? [];
+      const images = content.filter(p => p.type === 'localImage' || p.type === 'image');
+      const text = content.filter(p => p.type !== 'localImage' && p.type !== 'image')
+        .map(p => p.type === 'text' ? p.text : `[${p.type}] ${'path' in p ? p.path : ''}`).join('\n');
+      return <card key={entry.id} role="omp.user" tone="user">
+        <col key="content" gap="sm">
+          {!!images.length && <row key="images" role="omp.user.images" gap="sm" wrap>
+            {images.map((p, n) => p.type === 'localImage' ? this.imageNode(p.path)
+              : 'url' in p && p.url.startsWith('data:') ? this.imageNode(p.url)
+              : <text key={`unavailable-${n}`} tone="muted" text="Image unavailable" />)}
+          </row>}
+          {!!text && <md key="text" actions={{ menu: ['copy'] }} text={text} />}
+        </col>
+      </card>;
+    }
+    if (i.type === 'agentMessage') return <col key={entry.id} role="omp.assistant" gap="xs">
+      <md key="text" text={assistantMarkdown(i.text, this.c.cwd)} stream={!entry.done} actions={{ menu: ['copy'] }} />
+    </col>;
+    if (i.type === 'reasoning' && entry.done && !(i.summary ?? []).join('').trim()) return null;
+    if (i.type === 'reasoning') return <section key={entry.id} role={entry.done ? 'omp.thinking' : 'omp.thinking.live'} head={entry.done ? 'Thought summary' : 'Thinking…'} collapsible collapsed>
+      <md key="text" text={(i.summary ?? []).join('\n\n') || 'Thinking…'} stream={!entry.done} />
+    </section>;
+    if (i.type === 'commandExecution') return <tool key={entry.id} name="shell" title="Run command"
+      target={i.command} targetKind="command" status={status} collapsible collapsed={entry.done}
+      exit={i.exitCode ?? undefined} took={i.durationMs != null ? i.durationMs / 1000 : undefined}
+      meta={[i.cwd ?? '']} preview={{ tail: 8 }}>
+      <code key="out" text={i.aggregatedOutput ?? ''} lang="text" wrap />
+    </tool>;
+    if (i.type === 'fileChange') return <tool key={entry.id} name="edit" title="File changes" status={status} collapsible>
+      {(i.changes ?? []).map((f: any, n: number) => <diff key={`f${n}`} text={f.diff} path={f.path} mode="unified" />)}
+    </tool>;
+    if (i.type === 'functionCallOutput') return <tool key={entry.id} name="code" title={i.name ?? 'Tool output'} status="done" collapsible collapsed>
+      <code key="output" text={typeof i.output === 'string' ? i.output : JSON.stringify(i.output, null, 2)} lang="text" wrap />
+    </tool>;
+    if (i.type === 'mcpToolCall' || i.type === 'dynamicToolCall') return <tool key={entry.id} name="mcp"
+      title={`${i.type === 'mcpToolCall' ? i.server : i.namespace ?? 'tool'} · ${i.tool}`} status={status} collapsible collapsed={entry.done}>
+      <code key="args" text={JSON.stringify(i.arguments, null, 2)} lang="json" wrap />
+      <code key="result" text={JSON.stringify(i.type === 'mcpToolCall' ? i.error ?? i.result ?? '' : i.contentItems ?? '', null, 2)} lang="json" wrap />
+    </tool>;
+    if (i.type === 'collabAgentToolCall') return <agent key={entry.id} name={i.tool}
+      task={i.prompt ?? (i.receiverThreadIds ?? []).join(', ')} status={status === 'error' ? 'failed' : status}
+      model={i.model ?? undefined} collapsible collapsed={entry.done} />;
+    if (i.type === 'plan') return <card key={entry.id} head="Plan" collapsible><md text={assistantMarkdown(i.text, this.c.cwd)} /></card>;
+    if (i.type === 'contextCompaction') return <text key={entry.id} tone="muted" text="Context compacted" />;
+    return <section key={entry.id} head={i.type} collapsible collapsed><code text={JSON.stringify(i, null, 2)} lang="json" wrap /></section>;
+  }
+
+  private renderActivity(part: Extract<TranscriptPart, { kind: 'activity' }>, latest: boolean) {
+    const turn = this.c.turns.get(part.turnId);
+    const finalDelivered = this.c.items.some(e => e.turnId === part.turnId && e.item.type === 'agentMessage'
+      && e.item.phase === 'final_answer' && e.done);
+    const live = latest && this.c.activeTurn === part.turnId && !finalDelivered;
+    // A completed turn gets a new default. Opening details during a run never
+    // leaves command output expanded after the answer arrives.
+    const key = `${part.id}:${live ? 'live' : 'ended'}`;
+    const mode = this.activityModes.get(key) ?? (live ? 'compact' : 'collapsed');
+    const errors = part.entries.some(({ item }) => ('status' in item && (item.status === 'failed' || item.status === 'declined'))
+      || (item.type === 'commandExecution' && item.exitCode != null && item.exitCode !== 0));
+    const state = live ? this.c.requests.length ? 'Needs input' : 'Working' : turn?.status === 'interrupted' ? 'Stopped'
+      : turn?.status === 'failed' ? 'Failed' : this.c.connection === 'disconnected' && part.entries.some(e => !e.done) ? 'Disconnected' : 'Worked';
+    const duration = !live && turn?.durationMs != null ? ` for ${Math.max(1, Math.round(turn.durationMs / 1000))}s` : '';
+    const summary = activitySummary(part.entries);
+    const label = `${state}${duration}${summary ? ` · ${summary}` : ''}${errors ? ' · has errors' : ''}`;
+    const preview = compactActivity(part.entries.at(-1)!);
+    return <html.div key={`activity-${part.id}`} class="ct-activity">
+      <html.button key="toggle" class="ct-activity-toggle" aria={`${mode === 'expanded' ? 'Hide' : 'Show'} activity details · ${label}`}
+        attrs={{ 'aria-expanded': mode === 'expanded' }}
+        onClick={() => {
+          this.activityModes.set(key, mode === 'expanded' ? 'collapsed' : 'expanded'); this.render();
+        }}>
+        <icon key="chevron" role="ct.activity.chevron" name={mode === 'expanded' ? 'chev' : 'chev-r'} />
+        <html.span key="indicator" class="ct-activity-indicator">
+          {live && !this.c.requests.length ? <spinner key="progress" style="starburst" />
+            : <icon name={state === 'Needs input' ? 'message' : state === 'Stopped' ? 'stop'
+              : state === 'Failed' || state === 'Disconnected' || errors ? 'warn' : 'check'} />}
+        </html.span>
+        <html.span key="label" class="ct-activity-label">
+          <text key="state" role="ct.activity.state" text={state} />
+          <text key="meta" role="ct.activity.meta" text={`${duration}${summary ? ` · ${summary}` : ''}${errors ? ' · has errors' : ''}`.trim()} />
+        </html.span>
+      </html.button>
+      {mode === 'compact' && <html.div key="preview" class="ct-activity-preview">
+        <html.div class={`ct-activity-title ${part.entries.at(-1)!.item.type === 'commandExecution' ? 'ct-activity-command' : ''}`} title={preview.title}>{preview.title}</html.div>
+        {preview.output && <html.pre class="ct-activity-output">{preview.output}</html.pre>}
+      </html.div>}
+      {mode === 'expanded' && <col key="details" role="ct.activity.details" gap="sm">{part.entries.map(e => this.renderItem(e))}</col>}
+    </html.div>;
+  }
+
+  private renderRequest(r: PendingRequest) {
+    const p = r.params;
+    const relevant = !p.threadId || p.threadId === this.c.thread?.id;
+    const respond = (result: unknown) => { if (relevant) this.c.answer(r.id, result); };
+    if (r.method === 'item/tool/requestUserInput') return <html.div key={`req${r.id}`} class="ct-request">
+      <col gap="md">
+        <row role="ct.request.heading" gap="sm" align="center"><icon name="message" /><text>Codex needs your input</text></row>
+        {(p.questions ?? []).map((q: any) => <col key={`question-${q.id}`} role="ct.request.question" gap="sm">
+          {q.header && <text role="ct.request.eyebrow" text={q.header} />}
+          <text role="ct.request.prompt" text={q.question} />
+          {q.isSecret ? <text tone="error" text="Secure input is not supported yet. Stop this turn and use the official client." /> : <>
+            {(q.options ?? []).map((o: any) => <html.button key={`option-${o.label}`}
+              class={`ct-choice ${r.answers[q.id]?.[0] === o.label ? 'ct-selected' : ''}`}
+              aria={o.label} attrs={{ 'aria-pressed': r.answers[q.id]?.[0] === o.label }}
+              onClick={() => { r.answers[q.id] = [o.label]; this.render(); }}>
+              <html.span class="ct-choice-mark">{r.answers[q.id]?.[0] === o.label && <icon name="check" />}</html.span>
+              <col role="ct.choice.copy" gap="xs"><text role="ct.choice.label" text={o.label} />
+                {o.description && <text role="ct.choice.description" tone="muted" text={o.description} />}</col>
+            </html.button>)}
+            {(!q.options?.length || q.isOther) && this.button('Write an answer', () => {
+              if (!this.savedDraft) this.savedDraft = this.draft;
+              this.draft = new Draft();
+              this.answerTarget = { requestId: r.id, questionId: q.id }; this.closePanel();
+            }, 'ct-quiet')}
+            {r.answers[q.id] && !(q.options ?? []).some((o: any) => r.answers[q.id]?.[0] === o.label) &&
+              <text role="ct.request.answer" text={`Your answer: ${r.answers[q.id].join(', ')}`} />}
+          </>}
+        </col>)}
+        <html.div class="ct-buttons ct-request-actions">
+          {this.button('Submit answers', () => respond({ answers: r.answers }), 'ct-primary',
+            !(p.questions ?? []).every((q: any) => r.answers[q.id]?.length))}
+        </html.div>
+      </col>
+    </html.div>;
+    if (r.method === 'mcpServer/elicitation/request') return <html.div key={`req${r.id}`} class="ct-request"><col gap="sm">
+      <row role="ct.request.heading" gap="sm" align="center"><icon name="globe" /><text text={`${p.serverName} needs an action`} /></row>
+      <text text={p.message} /><text text={p.url} href={p.url} actions={{ click: 'open' }} />
+      <html.div class="ct-buttons ct-request-actions">
+        {this.button('Cancel', () => respond({ action: 'cancel', content: null, _meta: null }))}
+        {this.button('Decline', () => respond({ action: 'decline', content: null, _meta: null }))}
+        {this.button('Done', () => respond({ action: 'accept', content: null, _meta: null }), 'ct-primary')}
+      </html.div>
+    </col></html.div>;
+    return <html.div key={`req${r.id}`} class="ct-request"><col gap="sm">
+      <row role="ct.request.heading" gap="sm" align="center"><icon name="shield-alert" /><text>{r.method.includes('fileChange') ? 'Approve file changes' : 'Approve command'}</text></row>
+      {p.reason && <text text={p.reason} />}
+      {p.command && <code text={p.command} lang="sh" wrap />}
+      {p.cwd && <text role="ct.request.context" tone="muted" text={`Directory: ${p.cwd}`} />}
+      {p.grantRoot && <text tone="warning" text={`Requested write access: ${p.grantRoot}`} />}
+      <section head="Request details and scope" collapsible collapsed><code text={JSON.stringify(p, null, 2)} lang="json" wrap /></section>
+      <html.div class="ct-buttons ct-request-actions">
+        {this.button('Cancel turn', () => respond({ decision: 'cancel' }))}
+        {this.button('Decline', () => respond({ decision: 'decline' }), 'ct-danger')}
+        {this.button('Allow for session', () => respond({ decision: 'acceptForSession' }))}
+        {this.button('Allow once', () => respond({ decision: 'accept' }), 'ct-primary')}
+      </html.div>
+    </col></html.div>;
+  }
+
+  render() {
+    if (this.ended || this.surface.closed) return;
+    const c = this.c;
+    this.draft.onUpdate = () => this.schedule(); this.dialogDraft.onUpdate = () => this.schedule();
+    this.draft.context = { cols: this.session.caps.cols, dark: this.session.caps.dark,
+      reduceMotion: this.session.caps.reduceMotion, supports: kind => this.session.caps.kinds.includes(kind),
+      feature: name => this.session.caps.features.includes(name as any) };
+    this.draft.setWorkspace(c.cwd);
+    const ready = c.connection === 'ready' && !!c.thread && !c.operation && !this.pasting && !c.unconfirmed.length;
+    const pendingQuestion = this.answerTarget && c.requests.find(r => r.id === this.answerTarget!.requestId);
+    if (this.answerTarget && !pendingQuestion) this.finishAnswer();
+    const sendEnabled = !this.panel && !this.draft.completing &&
+      (!!this.draft.submittedText.trim() || (!this.answerTarget && this.images.length > 0));
+    const displayModel = c.models.find(m => m.model === c.model)?.displayName ?? c.model;
+    const parts = transcriptParts(c.items);
+    const latestActivity = parts.findLast(p => p.kind === 'activity' && p.turnId === c.activeTurn);
+    const awaitingActivity = c.activeTurn && !c.requests.length && !parts.some(p => p.kind === 'activity'
+      ? p.turnId === c.activeTurn : p.entry.turnId === c.activeTurn && p.entry.item.type === 'agentMessage');
+    this.surface.render({
+      // Messages remain direct children for Tern's native conversation layout.
+      main: <col>
+        {!c.items.length && <Welcome />}
+        {c.historyCursor && <text key="earlier" tone="muted" text="Load earlier messages"
+          onClick={() => this.action(() => c.loadHistory())} />}
+        {parts.map(p => p.kind === 'message' ? this.renderItem(p.entry) : this.renderActivity(p, p === latestActivity))}
+        {awaitingActivity && <row key="pending" role="ct.pending" gap="sm" align="center">
+          <spinner style="starburst" /><text tone="muted" text="Working…" />
+        </row>}
+        {!!c.activeTurn && !!c.plan.length && <checklist key="plan" phases={[{ title: 'Plan', items: c.plan.map((s, i) => ({
+          id: `step${i}`, text: s.step, status: s.status === 'completed' ? 'done' : s.status === 'inProgress' ? 'active' : 'pending',
+        })) }]} />}
+        {c.notices.filter(n => n.error).map(n => <card key={`notice${n.id}`} role="omp.error" tone="error" head="Error">
+          <text text={n.text} />{this.button('Dismiss', () => { c.notices = c.notices.filter(x => x.id !== n.id); c.changed(); })}
+        </card>)}
+      </col>,
+      dock: <col>
+        <text key="sessions" hidden title={JSON.stringify({ ...this.folderSessions.snapshot, cols: this.session.caps.cols,
+          sidebarRequest: this.sidebarRequested ? this.clientInstance : undefined,
+          cellWidth: this.session.caps.cell.w,
+          rows: this.folderSessions.snapshot.rows.map(row => ({ ...row, canArchive: row.canArchive && !this.hasSessionDraft(row.id) })),
+          archiveProtocol: 1, navigationProtocol: 1, newSessionProtocol: 1, navigation: this.sidebarNavigation })}
+          onAction={{ refresh: () => { void this.folderSessions.refresh(); },
+            locks: () => { void this.folderSessions.refreshLocks(); },
+            more: () => { void this.folderSessions.refresh(true); },
+            hide: () => this.folderSessions.hide(),
+            new: () => this.action(() => this.newSession()),
+            archive: e => this.action(() => this.archiveSession(e.value)),
+            resume: e => { void this.resumeFromSidebar(e.value); } }} />
+        {c.requests.map(r => this.renderRequest(r))}
+        {!!c.unconfirmed.length && <section key="unconfirmed" head="Message delivery unconfirmed">
+          <text text="Codex may have received this message. Check the conversation before deciding to retry." />
+          {this.button('Check conversation', () => this.action(() => c.refreshHistory()))}
+          {c.unconfirmed.map(q => <col key={q.id} gap="xs">
+            <text text={q.text || '[Image]'} lines={3} />
+            {!!q.images.length && <text tone="muted" text={`${q.images.length} attached image(s)`} />}
+            <row gap="sm">
+              {this.button('Already received', () => c.resolveUnconfirmed(q.id))}
+              {this.button('Queue for retry', () => c.resolveUnconfirmed(q.id, true))}
+            </row>
+          </col>)}
+        </section>}
+        {!!c.queue.length && <section key="queue" role="omp.queue" head={`Queued · ${c.queue.length}${c.queuePaused ? ' · paused' : ''}`} collapsible>
+          {c.queue.map(q => <row key={q.id} role="omp.queue.item" justify="between"><text text={q.text || '[Image]'} lines={2} />
+            {this.button('Remove', () => c.removeQueued(q.id))}</row>)}
+          {!c.busy && !c.unconfirmed.length && this.button('Run next', () => this.action(() => c.runQueue()))}
+          <text tone="muted" text="Queued locally. Stops and errors pause the queue." />
+        </section>}
+        <ComposerFrame running={!!c.activeTurn}>
+          {this.answerTarget && <row key="answering" gap="sm"><text tone="accent" text="Answering a question" />
+            {this.button('Back to message', () => this.finishAnswer())}</row>}
+          {!!this.images.length && <row key="images" role="omp.composer.chips" gap="sm" wrap>
+            {this.images.map((path, n) => <card key={path} role="omp.composer.chip" tone="accent" head={`Image #${n + 1}`}>
+              {this.imageNode(path, true)}
+              <row key="caption" gap="xs" justify="between">
+                <text tone="muted" text={this.previews.get(path)?.width ? `${this.previews.get(path)!.width} × ${this.previews.get(path)!.height}` : basename(path)} />
+                <icon name="x" aria={`Remove image ${n + 1}`} title="Remove image" onClick={() => {
+                  this.images = this.images.filter(p => p !== path); this.render();
+                }} />
+              </row>
+            </card>)}
+          </row>}
+          <row key="line" role="omp.composer.line" align="start" gap="sm">
+            <editor key="input" {...this.draft.nativeProps}
+              maxLines={9} grow={1} placeholder={this.answerTarget ? 'Type your answer…' : c.activeTurn ? 'Steer this turn, or queue a follow-up…' : 'Message Codex…'}
+              sendable={ready && !this.panel && !this.answerTarget && !this.draft.completing} onEdit={e => { this.draft.nativeEdit(e); this.render(); }}
+              onUndo={() => { this.draft.undo(); this.render(); }} onFocus={() => this.focusComposer()}
+              onSend={e => { if (this.draft.text !== e.text) this.draft.set(e.text); void this.send(); }} />
+          </row>
+          <row key="bar" role="omp.composer.bar" aria="Codex composer controls" gap="sm" align="center" wrap>
+            <row key="settings" role="ct.composer.settings" gap="xs" align="center" grow={1}>
+              <row key="model" role="omp.composer.model" gap="xs" align="center" title="Switch model · Ctrl+Shift+P"
+                onClick={() => this.openPanel('models')}>
+                <icon name="model" /><text wrap="none" text={displayModel} title={displayModel} /><icon name="chev" />
+              </row>
+              <row key="effort" role="omp.composer.effort" gap="xs" align="center" title="Reasoning effort"
+                onClick={() => this.openPanel('effort')}>
+                <effort level={c.effort} /><text wrap="none" text={c.effort} />
+              </row>
+            </row>
+            <row key="actions" role="ct.composer.actions" gap="xs" align="center">
+              <icon key="new" name="plus" title="New session · Ctrl+Shift+N" aria="New session" onClick={() => this.action(async () => {
+                if (this.pasting) throw new Error('Wait for the paste to finish.');
+                await this.newSession();
+              })} />
+              <icon key="history" name="history" title="Sessions · Ctrl+L" aria="Sessions" onClick={() => this.openPanel('history')} />
+              <icon key="more" name="more" title="More actions" aria="More actions" onClick={() => this.openPanel('menu')} />
+              {c.activeTurn && <row key="mode" role="omp.composer.effort" gap="xs" title="Steer now or queue a follow-up"
+                onClick={() => { this.sendMode = this.sendMode === 'steer' ? 'queue' : 'steer'; this.render(); }}>
+                <text text={this.sendMode === 'steer' ? 'Steer' : 'Queue'} /><icon name="chev" />
+              </row>}
+              {c.activeTurn && <text key="stop" role="omp.composer.stop" text="Stop" tone="error" title="Stop · Ctrl+C"
+                onClick={() => this.action(() => c.stop())} />}
+              {ready && <html.button key="send" role="omp.composer.send" class="ct-send" attrs={{ 'aria-disabled': !sendEnabled }}
+                aria={this.answerTarget ? 'Save answer' : 'Send message'}
+                title={this.answerTarget ? 'Save answer' : c.activeTurn ? this.sendMode === 'steer' ? 'Steer current turn' : 'Queue follow-up' : 'Send · Enter'}
+                onClick={sendEnabled ? () => { void this.send(); } : undefined}><icon name="arrow-up" /></html.button>}
+            </row>
+          </row>
+          <row key="nav" role="ct.nav" align="center" gap="sm">
+            <status key="status" role="omp.status" transparent grow={1}>
+              <seg key="path" role="omp.status.path" icon="folder" priority={6} title={c.cwd}
+                onClick={() => this.openPanel('workspace')}>{basename(c.cwd) || c.cwd}</seg>
+              <seg key="connection" role="omp.status.account" priority={1}
+                icon={c.connection === 'ready' ? undefined : c.connection === 'disconnected' ? 'error' : 'clock'}>
+                {c.connection === 'ready' ? c.account : c.connection === 'disconnected' ? 'Disconnected' : 'Connecting…'}
+              </seg>
+              {c.notices.some(n => !n.error) && <seg key="notice" icon="info" title="Codex notices" onClick={() => this.openPanel('details')}>Notice</seg>}
+            </status>
+            {(c.operation || !!this.pasting) && <row key="working" role="ct.working" gap="xs" align="center">
+              {!c.selecting && <spinner style="starburst" />}<text tone="muted" text={this.pasting ? 'Pasting…' : c.operation} />
+            </row>}
+          </row>
+        </ComposerFrame>
+      </col>,
+      layer: <col>{!this.panel && (this.draft.describe().c ?? []).filter((n): n is import('@oh-my-pi/pi-tui/native/node').NativeNode => 'k' in n && n.k === 'overlay')
+        .map(n => ompNode(n, this.draft.context, () => this.render()))}
+        {this.isPicker() ? this.renderPicker() : this.panel && <overlay key="panel" anchor="center" size={this.panel === 'diff' ? 'lg' : 'md'} modal head={this.panelTitle()}>
+        <col key="body" gap="sm">{this.renderPanel()}<rule />{this.button('Close · Esc', () => this.closePanel())}</col>
+      </overlay>}</col>,
+    });
+  }
+
+  private shortPath(path: string) {
+    const home = process.env.HOME;
+    const short = home && path.startsWith(home + '/') ? '~' + path.slice(home.length) : path;
+    return short.length > 52 ? '…/' + short.split('/').slice(-3).join('/') : short;
+  }
+
+  private isPicker() { return ['history', 'models', 'effort', 'menu'].includes(this.panel ?? ''); }
+
+  private pickerItems(): PickerItem[] {
+    const c = this.c;
+    let items: PickerItem[];
+    switch (this.panel) {
+      case 'history': items = c.threads.map(t => ({ id: t.id, label: t.name || t.preview || 'New session',
+        detail: this.shortPath(t.cwd), icon: 'message', facts: { updated: new Date(t.updatedAt * 1000).toLocaleDateString('en-US') } })); break;
+      case 'models': items = c.models.map(m => ({ id: m.model, label: m.displayName, detail: m.description,
+        icon: 'model', badges: c.model === m.model ? [{ text: 'Current', tone: 'accent' }] : undefined })); break;
+      case 'effort': items = (c.models.find(m => m.model === c.model)?.supportedReasoningEfforts ?? []).map(o => ({
+        id: o.reasoningEffort, label: o.reasoningEffort, detail: o.description, icon: 'brain',
+        badges: c.effort === o.reasoningEffort ? [{ text: 'Current', tone: 'accent' }] : undefined })); break;
+      default: items = [
+        { id: 'new', label: 'New session', icon: 'plus', detail: 'Ctrl+Shift+N' },
+        { id: 'history', label: 'Resume session', icon: 'history', detail: 'Ctrl+L' },
+        { id: 'workspace', label: 'Switch workspace', icon: 'folder' },
+        { id: 'attach', label: 'Attach image', icon: 'image' },
+        { id: 'models', label: 'Choose model', icon: 'model', detail: 'Ctrl+Shift+P' },
+        { id: 'effort', label: 'Reasoning effort', icon: 'brain' },
+        ...(c.diff ? [{ id: 'diff', label: 'View changes', icon: 'diff' }] : []),
+        { id: 'details', label: 'Session details', icon: 'info' },
+        { id: 'editing', label: this.draft.vim ? 'Use standard editing' : 'Enable Vim editing', icon: 'keyboard' },
+        { id: 'help', label: 'Keyboard shortcuts', icon: 'keyboard' },
+      ];
+    }
+    const query = this.dialogDraft.text.toLowerCase().trim();
+    return query ? items.filter(i => `${i.label} ${i.detail ?? ''}`.toLowerCase().includes(query)) : items;
+  }
+
+  private renderPicker() {
+    const items = this.pickerItems();
+    if (!items.some(i => i.id === this.pickerSelected)) this.pickerSelected = items[0]?.id ?? '';
+    return <picker key="panel" size="md" layout="rows" preview="none" title={this.panelTitle()} icon={this.panel === 'models' ? 'model' : this.panel === 'history' ? 'history' : 'search'}
+      query={this.dialogDraft.text} cursor={this.dialogDraft.cursor} placeholder="Type to filter…" focus="list"
+      items={items} selected={this.pickerSelected} empty="No matches" state={this.historyLoading && this.panel === 'history' ? 'loading' : 'ready'}
+      current={this.panel === 'models' ? [this.c.model] : this.panel === 'effort' ? [this.c.effort] : this.panel === 'history' ? [this.c.thread?.id ?? ''] : []}
+      actions={[
+        { id: 'confirm', label: this.panel === 'history' ? 'Resume' : 'Select', keys: ['enter'], primary: true, disabled: items.length ? undefined : true },
+        ...(this.panel === 'history' ? [{ id: 'scope', label: this.allThreads ? 'All workspaces' : 'This workspace', on: this.allThreads },
+          ...(this.c.threadsCursor ? [{ id: 'more', label: 'Load more' }] : [])] : []),
+        { id: 'close', label: 'Close', keys: ['esc'], end: true },
+      ]}
+      onSelect={e => { this.pickerSelected = e.item; this.render(); }}
+      onActivate={e => { this.pickerSelected = e.item; this.activatePicker(); }}
+      onAction={{ confirm: () => this.activatePicker(), close: () => this.closePanel(),
+        scope: () => { this.allThreads = !this.allThreads; this.action(() => this.c.listThreads(this.allThreads)); },
+        more: () => this.action(() => this.c.listThreads(this.allThreads, true)) }}
+      onEdit={e => { this.dialogDraft.nativeEdit(e); this.render(); }}
+      onUndo={() => { this.dialogDraft.undo(); this.render(); }} />;
+  }
+
+  private activatePicker() {
+    const id = this.pickerSelected;
+    if (!id) return;
+    if (this.panel === 'history') this.action(async () => { this.closePanel(); await this.openSession(id); });
+    else if (this.panel === 'models') this.action(async () => { this.c.chooseModel(id); this.closePanel(); });
+    else if (this.panel === 'effort') this.action(async () => { this.c.chooseEffort(id as ReasoningEffort); this.closePanel(); });
+    else if (id === 'new') this.action(async () => { this.closePanel(); await this.newSession(); });
+    else if (id === 'editing') { this.draft.setVim(!this.draft.vim); this.closePanel(); }
+    else this.openPanel(id as NonNullable<NativeUI['panel']>);
+  }
+
+  private panelTitle() {
+    return ({ history: 'Sessions', models: 'Select model', effort: 'Reasoning effort', workspace: 'Workspace', attach: 'Attach image', details: 'Session details', help: 'Getting started', diff: 'Changes', menu: 'Actions' })[this.panel!];
+  }
+  private renderPanel() {
+    const c = this.c;
+    switch (this.panel) {
+      case 'workspace': case 'attach': return <>
+        <text tone="muted" text={this.panel === 'workspace' ? 'Start a new session in this directory. Codex keeps the current session.' : 'Enter the full path to an image to attach it to your next message.'} />
+        <input key="field" text={this.dialogDraft.text} cursor={this.dialogDraft.cursor} anchor={this.dialogDraft.anchor}
+          placeholder="/full/path" onEdit={e => { this.dialogDraft.nativeEdit(e); this.render(); }}
+          onUndo={() => { this.dialogDraft.undo(); this.render(); }} onFocus={() => { this.focused = 'layer.panel.body.field'; this.surface.focus(this.focused); }} />
+        {this.button(this.panel === 'workspace' ? 'New session' : 'Attach image', () => this.action(() => this.confirmPath()), 'ct-primary')}
+      </>;
+      case 'details': return <>
+        <kv items={[
+          { k: 'Codex × Tern', v: '0.1.0' },
+          { k: 'Tested Codex version', v: '0.162.1' }, { k: 'Active model', v: c.effective?.model ?? 'Unknown' },
+          { k: 'Reasoning effort', v: c.effective?.reasoningEffort ?? 'Default' },
+          { k: 'Sandbox', v: c.effective?.sandbox?.type ?? 'Loading' },
+          { k: 'Approval policy', v: JSON.stringify(c.effective?.approvalPolicy ?? null) },
+          { k: 'Reviewer', v: c.effective?.approvalsReviewer === 'auto_review' || c.effective?.approvalsReviewer === 'guardian_subagent'
+            ? 'Approve for me' : c.effective?.approvalsReviewer === 'user' ? 'Ask for approval' : 'Default' },
+          { k: 'Session', v: c.thread?.id ?? 'Not created' },
+          { k: 'Backend', v: c.rpc.options.binary ?? process.env.CODEX_BINARY ?? 'codex (PATH)' },
+        ]} />
+        {c.notices.filter(n => !n.error).map(n => <section key={`notice-${n.id}`} head="Codex notice" collapsible collapsed><text text={n.text} /></section>)}
+        <section head="Diagnostics" collapsible collapsed><code text={c.diagnostics.join('\n').slice(-12000)} lang="text" wrap /></section>
+      </>;
+      case 'diff': return <diff text={c.diff} mode="unified" />;
+      case 'help': return <md text={`**Keyboard shortcuts**\n\n- Ctrl+A / Ctrl+E — Start / end of line\n- Ctrl+B / Ctrl+F — Move left / right\n- Ctrl+P / Ctrl+N — Move up / down\n- Option+Left / Right — Move by word\n- Ctrl+H / Ctrl+D — Delete backward / forward\n- Ctrl+U / Ctrl+K / Ctrl+W — Delete to line start / end / previous word\n- Ctrl+Y / Option+Y — Restore deleted text / cycle earlier deletions\n- Command+A — Select all\n- Command+Z / Command+Shift+Z — Undo / redo\n- Enter — Send message\n- Shift+Enter — New line\n- Command+, — Tern terminal settings\n- Tab — Complete file paths\n- Command+V — Paste text, files or images through Tern\n- Ctrl+V — Paste from the system clipboard\n- Ctrl+Shift+N — New session\n- Ctrl+L — Resume session\n- Ctrl+Shift+P — Select model\n- Ctrl+C — Stop the current turn; quit when idle\n- Ctrl+Q — Quit\n- Esc — Close a panel\n\nUse **New session** above the sidebar list to start a conversation in the current folder. Other sessions keep their tasks and drafts.\n\nWhile Codex is working, choose **Steer** to add input to the current turn, or **Queue** to save it for the next turn. A stop or error pauses the local queue.\n\nPaste an image to see a thumbnail before sending. Click it to preview; use × to remove it. Image file paths and **Attach image** in the actions menu also work. Copy a PDF or another document in Finder and paste it to insert a Markdown file link.\n\nThis prototype does not support complex MCP forms, secure input, voice, or desktop host tools.`} />;
+      default: return null;
+    }
+  }
+
+  private imageNode(path: string, small = false) {
+    const cached = this.previews.get(path);
+    if (cached) return <image key={path} blob={cached.blob} alt={cached.name} path={cached.path}
+      w={cached.width} h={cached.height} max={{ w: small ? '12ch' : '28ch', h: small ? '4lines' : '10lines' }}
+      actions={{ click: 'zoom', menu: ['open'] }} title={cached.name} />;
+    if (!this.loadingPreviews.has(path) && !this.failedPreviews.has(path)) {
+      this.loadingPreviews.add(path);
+      const data = path.match(/^data:(image\/(?:png|jpeg|webp|gif));base64,(.+)$/s);
+      const load = data ? savePastedImage(Buffer.from(data[2], 'base64'), data[1]) : loadImage(path);
+      void load.then(image => this.cacheImage(image, path)).catch(() => this.failedPreviews.add(path))
+        .finally(() => { this.loadingPreviews.delete(path); this.schedule(); });
+    }
+    return <text key={path} tone="muted" text={this.failedPreviews.has(path) ? 'Image unavailable' : 'Loading image…'} />;
+  }
+
+  private cacheImage(image: PreviewImage, key = image.path) {
+    const cached = this.previews.get(key);
+    if (!cached && !this.ended) this.previews.set(key, { ...image, blob: this.session.blob(image.bytes, image.mime) });
+  }
+
+  private async attach(image: PreviewImage) {
+    if (this.ended) return;
+    this.cacheImage(image);
+    if (!this.images.includes(image.path)) this.images = [...this.images, image.path];
+    this.render();
+  }
+
+  private async attachFiles(paths: string[], target: Draft) {
+    const images = await Promise.all(paths.filter(isImagePath).map(loadImage));
+    const text = markdownFileLinks(paths.filter(path => !isImagePath(path)));
+    if (target !== this.draft || this.ended) return;
+    if (text) target.key({ name: 'paste', text, ctrl: false, alt: false, shift: false, meta: false });
+    for (const image of images) await this.attach(image);
+  }
+
+  async pasteFiles(paths: string[]) {
+    if (this.panel || this.answerTarget) throw new Error('Paste files into the message composer.');
+    const target = this.draft;
+    this.pasting++; this.render();
+    try { await this.attachFiles(paths, target); }
+    finally { this.finishPaste(); }
+  }
+
+  /** Text is never rewritten unless the entire paste is a readable image path. */
+  pasteText(text: string) {
+    if (this.ended) return;
+    const target = this.panel ? this.dialogDraft : this.draft;
+    const paths = !this.panel && !this.answerTarget ? pastedImagePaths(text, this.c.cwd) : undefined;
+    if (!paths) { target.key({ name: 'paste', text, ctrl: false, alt: false, shift: false, meta: false }); this.render(); return; }
+    this.pasting++; this.render();
+    this.action(async () => {
+      try {
+        await this.attachFiles(paths, target);
+      } catch {
+        target.key({ name: 'paste', text, ctrl: false, alt: false, shift: false, meta: false });
+      } finally { this.finishPaste(); }
+    });
+  }
+
+  async pasteBinary(bytes: Uint8Array, mime: string) {
+    if (this.panel || this.answerTarget) throw new Error('Paste images into the message composer.');
+    const target = this.draft;
+    this.pasting++; this.render();
+    try {
+      const image = await savePastedImage(bytes, mime);
+      if (target === this.draft && !this.ended) await this.attach(image);
+    } finally { this.finishPaste(); }
+  }
+
+  private async pasteClipboard() {
+    const target = this.panel ? this.dialogDraft : this.draft;
+    const imageAllowed = !this.panel && !this.answerTarget;
+    this.pasting++; this.render();
+    try {
+      const content = await readSystemClipboard(this.c.cwd, imageAllowed);
+      if (content.kind === 'files') {
+        try { await this.attachFiles(content.paths, target); }
+        catch (error) {
+          if (content.text === undefined) throw error;
+          target.key({ name: 'paste', text: content.text, ctrl: false, alt: false, shift: false, meta: false });
+        }
+      } else if (content.kind === 'image') {
+        const saved = await savePastedImage(content.image.data, content.image.mimeType);
+        if (target === this.draft && !this.ended) await this.attach(saved);
+      } else if (content.kind === 'text') {
+        target.key({ name: 'paste', text: content.text, ctrl: false, alt: false, shift: false, meta: false });
+      } else this.c.notice('Clipboard is empty or has no supported content.');
+    } finally { this.finishPaste(); }
+  }
+
+  private finishPaste() {
+    this.pasting = Math.max(0, this.pasting - 1);
+    this.render();
+    while (!this.pasting && !this.ended && this.deferredKeys.length) {
+      if (!this.handleKey(this.deferredKeys.shift()!)) { void this.session.close(); break; }
+    }
+  }
+
+  private async confirmPath() {
+    const path = resolve(this.c.cwd, this.dialogDraft.text.trim().replace(/^~(?=\/)/, process.env.HOME ?? '~'));
+    if (this.panel === 'workspace') await this.newSession(path);
+    else {
+      await this.attach(await loadImage(path));
+    }
+    this.closePanel();
+  }
+
+  async send() {
+    if (this.pasting) return;
+    const text = this.draft.submittedText;
+    if (this.answerTarget) {
+      const r = this.c.requests.find(r => r.id === this.answerTarget!.requestId);
+      if (r && text.trim()) r.answers[this.answerTarget.questionId] = [text];
+      this.finishAnswer(); this.render(); return;
+    }
+    if (!text.trim() && !this.images.length) return;
+    if (this.c.operation) return;
+    if (this.c.unconfirmed.length) { this.c.notice('Check the unconfirmed message before sending again.'); return; }
+    const composer = this.composer, threadId = this.c.thread?.id;
+    const input = composer.take();
+    // Clear optimistically for responsive typing, but restore rejected input intact.
+    this.render();
+    try { await this.c.submit(input.text, input.images, this.sendMode); input.draft.addHistory(text); }
+    catch (e) {
+      if (!(e instanceof RpcOutcomeUnknown) && !composer.restore(input)) this.c.preserveInput(threadId, input.text, input.images);
+      this.c.sessionNotice(threadId, e instanceof Error ? e.message : String(e), true);
+    }
+    this.render(); this.focusComposer();
+  }
+
+  private finishAnswer() {
+    this.answerTarget = null;
+    this.draft = this.savedDraft ?? new Draft(); this.savedDraft = null;
+  }
+
+  private handleKey(key: Key): boolean {
+    if (key.ctrl && key.name === 'q') return false;
+    if (this.pasting && !(key.ctrl && key.name === 'c')) { this.deferredKeys.push(key); return true; }
+    if (key.ctrl && key.name === 'v') { this.action(() => this.pasteClipboard()); return true; }
+    if (key.ctrl && key.name === 'c') {
+      if (this.c.activeTurn) this.action(() => this.c.stop());
+      else if (!this.c.operation) {
+        if (this.c.hasWork) this.c.notice('Other sessions are still working. Select a session to stop it.');
+        else return false;
+      }
+      return true;
+    }
+    if (key.ctrl && key.name === 'd' && !this.draft.text && !this.images.length && !this.panel && !this.c.busy) {
+      if (this.c.hasWork) { this.c.notice('Other sessions are still working.'); return true; }
+      return false;
+    }
+    if (key.name === 'escape' && this.panel) { this.closePanel(); return true; }
+    if (this.panel) {
+      if (this.isPicker()) {
+        const items = this.pickerItems();
+        if (key.name === 'enter') this.activatePicker();
+        else if (key.name === 'up' || key.name === 'down' || (key.ctrl && !key.shift && (key.name === 'p' || key.name === 'n'))) {
+          const at = Math.max(0, items.findIndex(i => i.id === this.pickerSelected));
+          this.pickerSelected = items[(at + (key.name === 'up' || key.name === 'p' ? -1 : 1) + items.length) % items.length]?.id ?? '';
+        } else { this.dialogDraft.key(key); }
+        this.render();
+        return true;
+      }
+      if (this.panel === 'workspace' || this.panel === 'attach') {
+        if (key.name === 'enter') this.action(() => this.confirmPath()); else this.dialogDraft.key(key);
+        this.render();
+      }
+      return true;
+    }
+    if (key.ctrl && key.shift && !key.alt && !key.meta && key.name === 'n') { this.action(() => this.newSession()); return true; }
+    if (key.ctrl && key.name === 'l') { this.openPanel('history'); return true; }
+    if (key.ctrl && key.shift && !key.alt && !key.meta && key.name === 'p') { this.openPanel('models'); return true; }
+    if (key.name === 'enter' && !key.shift && !key.alt && !this.draft.completing) void this.send();
+    else if (key.name === 'paste') this.pasteText(key.text ?? '');
+    else { this.draft.key(key); this.render(); }
+    return true;
+  }
+
+  async run() {
+    const disablePaste = () => this.enhanced?.disable();
+    process.once('exit', disablePaste);
+    this.enhanced?.enable();
+    this.render(); this.focusComposer();
+    try {
+      for await (const input of this.session) {
+        if (input.type === 'event') {
+          if (input.event.ev === 'error') this.c.notice(`Tern: ${input.event.msg}`, true);
+          continue;
+        }
+        if (!this.handleKey(input.key)) break;
+      }
+    } finally {
+      disablePaste(); process.off('exit', disablePaste);
+      await this.close();
+    }
+  }
+
+  async close() {
+    this.ended = true; this.folderSessions.dispose(); this.enhanced?.disable();
+    if (this.renderTimer) clearTimeout(this.renderTimer);
+    await this.session.close(); this.clipboardInput?.dispose();
+  }
+}
+
+export async function createNativeUI(c: Controller) {
+  let ui: NativeUI | null = null;
+  const enhanced = new EnhancedPasteController({
+    write: data => process.stdout.write(data),
+    pasteText: text => ui?.pasteText(text),
+    pasteFiles: paths => ui?.pasteFiles(paths),
+    pasteImage: image => ui?.pasteBinary(Buffer.from(image.data, 'base64'), image.mimeType),
+    showStatus: message => c.notice(message, true),
+  });
+  const input = process.stdin.isTTY ? new ClipboardInput(process.stdin,
+    data => enhanced.handleInput(data), message => c.notice(message, true)) : undefined;
+  try {
+    const session = await connect({ app: 'codex-tern', version: '0.1.0', features: ['edit', 'undo', 'send'], exitHooks: true,
+      ...(input ? { input } : {}) });
+    if (!session) { input?.dispose(); return null; }
+    ui = new NativeUI(c, session, session.open({ mode: 'inline', title: 'Codex × Tern', role: 'codex-tern' }), enhanced, input);
+    return ui;
+  } catch (error) { input?.dispose(); throw error; }
+}

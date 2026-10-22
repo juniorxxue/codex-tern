@@ -1,0 +1,9 @@
+#!/usr/bin/env bun
+import { existsSync } from 'node:fs';
+
+const client = new URL('../dist/cli.mjs', import.meta.url);
+if (!existsSync(client)) {
+  console.error('codex-tern: build files are missing. Run bun install && bun run build in the codex-tern source directory.');
+  process.exit(1);
+}
+await import(client.href);

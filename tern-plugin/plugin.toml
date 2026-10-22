@@ -1,0 +1,8 @@
+schema = 1
+id = "codex-tern"
+name = "Codex × Tern"
+version = "0.1.0"
+description = "A native panel for Codex sessions in the current folder."
+icon = "app-codex"
+window = "window.luau"
+styles = ["sessions.css", "appearance.css"]

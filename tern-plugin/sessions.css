@@ -1,0 +1,43 @@
+[data-role="codex-tern.sessions"] {
+  padding: 14px 8px;
+  gap: 2px;
+  font-family: "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 22px;
+}
+[data-role="codex-tern.sessions.folder"] {
+  padding: 2px 6px 12px;
+  color: var(--t3);
+  font-size: 12px;
+}
+[data-role="codex-tern.sessions.new"] {
+  padding: 6px;
+  margin-bottom: 12px;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+}
+[data-role="codex-tern.sessions.new"]:hover { background: var(--l2); }
+[data-role="codex-tern.sessions.new"] > .sf-icon { width: 14px; height: 14px; }
+[data-role="codex-tern.sessions.new"][data-mark="disabled"] { opacity: 0.5; cursor: default; }
+[data-role="codex-tern.sessions.item"] {
+  padding: 5px 6px;
+  border-radius: 7px;
+  gap: 0;
+  transition: none;
+}
+[data-role="codex-tern.sessions.item"]:hover { background: var(--raise); }
+[data-role="codex-tern.sessions.item"][data-mark="pick"] { background: var(--l2); }
+[data-role="codex-tern.sessions.item"][data-mark="locked"] { color: var(--t3); cursor: default; }
+[data-role="codex-tern.sessions.item"][data-mark="locked"]:hover { background: transparent; }
+[data-role="codex-tern.sessions.lock"],
+[data-role="codex-tern.sessions.waiting"],
+[data-role="codex-tern.sessions.running"] { width: 13px; height: 13px; flex-shrink: 0; color: var(--t3); }
+[data-role="codex-tern.sessions.title"] { font-size: 14px; line-height: 22px; }
+[data-role="codex-tern.sessions.delete"] { width: 14px; height: 14px; flex-shrink: 0; color: var(--t3); opacity: 0; cursor: pointer; }
+[data-role="codex-tern.sessions.item"]:hover [data-role="codex-tern.sessions.delete"],
+[data-role="codex-tern.sessions.item"]:focus-within [data-role="codex-tern.sessions.delete"],
+[data-role="codex-tern.sessions.item"][data-mark="pick"] [data-role="codex-tern.sessions.delete"] { opacity: 1; }
+[data-role="codex-tern.sessions.delete"]:hover { color: var(--bad); }
+[data-role="codex-tern.sessions.delete"][data-mark="disabled"] { cursor: default; color: var(--t3); }
+[data-role="codex-tern.sessions.note"] { padding: 8px; font-size: 12px; }
