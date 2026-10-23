@@ -21,6 +21,8 @@ import { ompNode } from './omp-native';
 import { transcriptParts, activitySummary, compactActivity, type TranscriptPart } from './activity';
 import { appearanceStyles } from './appearance';
 import { assistantMarkdown } from './assistant-markdown';
+import { assistantParts } from './proposals';
+import { ProposalView } from './proposal-view';
 import { runPluginCommand } from './tern-plugin';
 
 const styles = css`
@@ -42,7 +44,6 @@ const styles = css`
   [data-role="omp.user.images"] { min-width: 0; align-items: flex-start; }
   [data-role="omp.user.images"] .sf-image { max-width: 100%; border-radius: 8px; overflow: hidden; }
   [data-role="omp.user.images"] .sf-image img { display: block; max-width: 100%; height: auto; object-fit: contain; }
-  [aria-label="Codex composer controls"] > .sf-place { display: none; }
 `;
 
 export class NativeUI {
@@ -70,6 +71,8 @@ export class NativeUI {
   private savedDraft: Draft | null = null;
   private pickerSelected = '';
   private activityModes = new Map<string, 'expanded' | 'collapsed'>();
+  private proposalSelections = new Map<string, Set<string>>();
+  private proposalDrafts = new WeakMap<Draft, { text: string; prefix: string }>();
   private readonly folderSessions: FolderSessions;
   private sessionDrafts = new Map<string, { composer: Composer;
     answerTarget: NativeUI['answerTarget']; savedDraft: Draft | null }>();
@@ -204,6 +207,59 @@ export class NativeUI {
     } else { this.focused = ''; this.surface.focus(null); }
   }
 
+  private renderAssistant(entry: DisplayItem, text: string) {
+    const parts = assistantParts(text);
+    const proposals = parts.filter(part => part.kind === 'proposal');
+    const threadId = this.c.thread?.id;
+    const key = JSON.stringify([threadId, entry.turnId, entry.id]);
+    // Match the source as well as its position so revised suggestions lose stale checks.
+    const ids = proposals.map(part => JSON.stringify([part.start, part.before, part.after]));
+    const selection = this.proposalSelections.get(key) ?? new Set<string>();
+    for (const id of selection) if (!ids.includes(id)) selection.delete(id);
+    const selected = () => ids.flatMap((id, index) => selection.has(id) ? [index + 1] : []);
+    const available = () => !!threadId && this.c.thread?.id === threadId && !this.c.operation &&
+      !this.panel && !this.answerTarget && !this.pasting && this.c.items.some(item =>
+        item.id === entry.id && item.turnId === entry.turnId && item.done &&
+        item.item.type === 'agentMessage' && item.item.text === text);
+    const disabled = !available();
+    let number = 0;
+    return <col key={entry.id} role="omp.assistant" gap="xs">
+      {parts.map(part => {
+        if (part.kind === 'markdown') return <md key={`text-${part.start}`} text={assistantMarkdown(part.text, this.c.cwd)}
+          stream={!entry.done} actions={{ menu: ['copy'] }} />;
+        const id = ids[number++]!;
+        return <ProposalView key={`proposal-${part.start}`} before={part.before} after={part.after}
+          number={number} checked={selection.has(id)} disabled={disabled} onSelect={checked => {
+            if (!available()) return;
+            if (checked) selection.add(id); else selection.delete(id);
+            this.proposalSelections.set(key, selection); this.render();
+          }} />;
+      })}
+      {!!proposals.length && <html.div key="proposal-actions" class="ct-proposal-actions">
+        <html.button class="ct-button ct-proposal-apply" aria="Apply selected edits" attrs={{ 'aria-disabled': disabled || !selected().length }}
+          title="Add a request to the message box" onClick={() => {
+            const numbers = selected();
+            if (!available() || !numbers.length) return;
+            let prompt = `Apply the edits ${numbers.join(', ')}.`;
+            const index = this.c.items.findIndex(item => item.id === entry.id && item.turnId === entry.turnId);
+            if (this.c.items.slice(index + 1).some(item => item.item.type === 'agentMessage' &&
+              assistantParts(item.item.text).some(part => part.kind === 'proposal'))) {
+              const beginning = proposals[0]!.before.trim().slice(0, 160);
+              prompt += `\n\nUse the earlier proposal reply whose first original passage begins:\n${beginning}`;
+            }
+            // Repeated clicks update our untouched request; user-written text stays intact.
+            const previous = this.proposalDrafts.get(this.draft);
+            const prefix = previous?.text === this.draft.text ? previous.prefix : this.draft.text;
+            const next = prefix ? `${prefix}\n\n${prompt}` : prompt;
+            if (next !== this.draft.text) this.draft.set(next);
+            this.proposalDrafts.set(this.draft, { text: next, prefix });
+            this.render(); this.focusComposer();
+          }}>Apply selected edits</html.button>
+        <html.span class="ct-proposal-count" text={`${selected().length} selected`} />
+      </html.div>}
+    </col>;
+  }
+
   private renderItem(entry: DisplayItem) {
     const i = entry.item;
     const itemStatus = 'status' in i ? i.status : undefined;
@@ -225,9 +281,7 @@ export class NativeUI {
         </col>
       </card>;
     }
-    if (i.type === 'agentMessage') return <col key={entry.id} role="omp.assistant" gap="xs">
-      <md key="text" text={assistantMarkdown(i.text, this.c.cwd)} stream={!entry.done} actions={{ menu: ['copy'] }} />
-    </col>;
+    if (i.type === 'agentMessage') return this.renderAssistant(entry, i.text);
     if (i.type === 'reasoning' && entry.done && !(i.summary ?? []).join('').trim()) return null;
     if (i.type === 'reasoning') return <section key={entry.id} role={entry.done ? 'omp.thinking' : 'omp.thinking.live'} head={entry.done ? 'Thought summary' : 'Thinking…'} collapsible collapsed>
       <md key="text" text={(i.summary ?? []).join('\n\n') || 'Thinking…'} stream={!entry.done} />

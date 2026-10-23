@@ -1,7 +1,7 @@
 [data-role="codex-tern.sessions"] {
   padding: 14px 8px;
   gap: 2px;
-  font-family: "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+  font-family: "Nunito", "GenSenRounded2 TC", "GenSenRounded2 TC R", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
   font-size: 14px;
   line-height: 22px;
 }

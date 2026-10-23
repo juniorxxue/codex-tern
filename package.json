@@ -18,6 +18,7 @@
     "dev": "bun src/cli.ts",
     "test": "bun test test/",
     "test:ui": "bun scripts/ui-qa.mjs",
+    "test:proposals": "bun scripts/proposals-qa.mjs",
     "test:sessions": "bun scripts/sessions-qa.mjs",
     "check": "bun --bun tsc --noEmit",
     "smoke": "bun scripts/smoke.ts"

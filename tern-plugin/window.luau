@@ -305,7 +305,13 @@ tern.on("pane_closed", function(ev, cx)
   if entry then send(cx, entry.target, "hide"); panels[ev.pane] = nil end
 end)
 
-tern.on("window_start", function(cx)
+local function restore(cx)
   remember(cx)
+  for pane, entry in panels do update(cx, pane, entry) end
   poll()
-end)
+end
+
+tern.on("window_start", restore)
+-- window_start runs once per plugin per window, not after every plugin reload.
+-- A fresh VM must recover the existing canvases and restart their refresh timer.
+tern.timer(0, function(cx) if cx then restore(cx) end end)

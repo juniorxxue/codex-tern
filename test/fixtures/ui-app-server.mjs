@@ -4,9 +4,17 @@ import { createInterface } from 'node:readline';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { FileLock } from '@oh-my-pi/pi-natives';
 import { join } from 'node:path';
+import { proposalReply } from './proposals.mjs';
 const send = m => process.stdout.write(JSON.stringify(m) + '\n');
 const notify = (method, params) => send({ method, params });
 const threads = new Map();
+if (process.env.QA_PROPOSAL_FIXTURES) threads.set('proposal-saved', {
+  id: 'proposal-saved', cwd: process.cwd(), name: 'Saved proposals', preview: '',
+  createdAt: 1792558800, updatedAt: 1792558800, recencyAt: 1792558800,
+  turns: [{ id: 'proposal-saved-turn', status: 'completed', items: [
+    { id: 'proposal-saved-answer', type: 'agentMessage', phase: 'final_answer', text: proposalReply },
+  ] }],
+});
 if (process.env.QA_SESSION_FIXTURES) {
   for (let n = 1; n <= 7; n++) threads.set(`saved-${n}`, {
     id: `saved-${n}`, cwd: process.cwd(), name: `Saved session ${n}`, preview: '',
@@ -141,6 +149,9 @@ createInterface({ input: process.stdin }).on('line', line => {
         add({ id: `file-${turn.id}`, type: 'fileChange', status: 'completed', changes: [{ path: 'note.txt', kind: { type: 'add' }, diff }] });
         event('turn/diff/updated', { diff });
         setTimeout(() => finish('QA_EDIT_DONE'), 50);
+      } else if (text.includes('QA_PROPOSAL_FIXTURE')) {
+        add({ id: `answer-${turn.id}`, type: 'agentMessage', phase: 'final_answer', text: proposalReply.slice(0, proposalReply.indexOf('\n:::')) }, false);
+        setTimeout(() => finish(proposalReply), 900);
       } else if (text.includes('QA_CITATION_FIXTURE')) {
         const citation = ':codex-file-citation{path="' + process.cwd() + '/.prototype/ui-qa/中文 [draft] (1) #?& 100%.txt" purpose="output"}';
         add({ id: `answer-${turn.id}`, type: 'agentMessage', phase: 'final_answer', text: 'Read ' + citation.slice(0, -5) }, false);

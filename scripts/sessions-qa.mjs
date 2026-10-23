@@ -100,6 +100,26 @@ try {
     `default sidebar width: ${tree(panel)[0].rect[2]}`);
   pass('sidebar opens automatically with native cards, compact titles and unchanged composer focus');
 
+  click('[data-role="codex-tern.sessions.folder"]');
+  assert.equal(tree('[data-role="omp.composer.bar"] > .sf-place').length, 0, 'inactive pane has no duplicate host title');
+  const modelBox = tree('[data-role="omp.composer.model"]')[0].rect;
+  const effortBox = tree('[data-role="omp.composer.effort"]')[0].rect;
+  assert.ok(effortBox[0] >= modelBox[0] + modelBox[2], 'model and effort controls do not overlap');
+  ctl('shot composer-sidebar-focused');
+  pass('focusing the sidebar keeps the composer model controls clear of duplicate labels');
+
+  execFileSync('tern', ['plugin', 'reload'], { env, encoding: 'utf8', timeout: 15000 });
+  // No sidebar click or command after reload: either would restart polling and
+  // conceal the lost timer. Activity in the existing client must update it.
+  click('[data-role="omp.editor"] .sf-editor'); type('hold'); key('Enter');
+  await wait(() => text('.ct-activity').includes('Working'), 'task after plugin reload');
+  await wait(() => tree('[data-role="codex-tern.sessions.running"]').length === 1, 'sidebar polling restored after plugin reload');
+  click('[data-role="omp.composer.stop"]');
+  await wait(() => tree('[data-role="codex-tern.sessions.running"]').length === 0, 'sidebar observes completion after plugin reload');
+  assert.equal(tree('[data-role="omp.composer.bar"] > .sf-place').length, 0, 'host title cannot overlap model controls');
+  assert.equal(ctl('state').panes.length, 2);
+  pass('plugin reload restores the existing sidebar and its activity polling without a sidebar command');
+
   ctl('plugins run plugin.codex-tern.sessions'); await pause(1000);
   assert.equal(ctl('state').panes.length, 2);
   pass('repeating the command reuses the existing panel');

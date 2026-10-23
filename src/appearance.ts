@@ -2,10 +2,10 @@ import { css } from '@stencil-hq/tern';
 
 // Tern confines program sheets to region descendants. The window plugin
 // wraps this same sheet in a surface selector for clients already running.
-// Match the reference's density, with 24 px lines for mixed Chinese/English text.
+// Rounded reading fonts, with open leading for mixed Chinese/English text.
 export const appearanceStyles = css`
-  .sf.sf-col[data-role="omp.assistant"] {
-    --ct-prose: "SF Pro Text", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif;
+  .sf {
+    --ct-prose: "Nunito", "GenSenRounded2 TC", "GenSenRounded2 TC R", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif;
   }
   .sf.sf-card[data-role="omp.user"],
   .sf.sf-col[data-role="omp.assistant"],
@@ -23,27 +23,70 @@ export const appearanceStyles = css`
     margin-top: 0;
     margin-bottom: 0;
   }
-  .sf.sf-col[data-role="omp.assistant"] > .sf-md { gap: 12px; }
+  .sf.sf-col[data-role="omp.assistant"] > .sf-md,
+  .sf.sf-card[data-role="omp.user"] > .sf-md { gap: 16px; }
+  .ct-proposal {
+    font-family: var(--ct-prose);
+    font-size: 17px;
+    line-height: 29px;
+    color: var(--t1);
+    margin: 8px 0;
+    min-width: 0;
+  }
+  .ct-proposal-side + .ct-proposal-side { margin-top: 14px; }
+  .ct-proposal-label { color: var(--t3); font-size: 12px; line-height: 20px; margin-bottom: 4px; }
+  .ct-proposal-choice { display: flex; align-items: center; gap: 8px; width: fit-content; margin-bottom: 8px; font-size: 13px; color: var(--t2); cursor: pointer; }
+  .ct-proposal-choice [role="checkbox"] { cursor: pointer; }
+  .ct-proposal-choice [aria-disabled="true"] { cursor: default; }
+  .ct-proposal-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 4px 0 12px; }
+  .ct-proposal-count { color: var(--t3); font-size: 12px; }
+  .ct-proposal-apply { font-size: 13px; cursor: pointer; }
+  .ct-proposal-apply[aria-disabled="true"] { opacity: 0.45; cursor: default; }
+  .ct-proposal-apply:focus-visible, .ct-proposal-choice [role="checkbox"]:focus-visible { outline: 1px solid var(--accent); }
+  .ct-proposal-prose { overflow-wrap: anywhere; }
+  .ct-proposal-paragraph + .ct-proposal-paragraph { margin-top: 16px; }
+  .ct-proposal-del { --t1: var(--bad); color: var(--bad); text-decoration: line-through; }
+  .ct-proposal-ins { --t1: var(--sf-c-ins, var(--good)); color: var(--sf-c-ins, var(--good)); background: var(--ct-proposal-added-bg); }
+  .ct-proposal { --ct-proposal-added-bg: color-mix(in srgb, var(--sf-c-ins, var(--good)) 12%, transparent); }
+  .ct-proposal-inline .sf-md,
+  .ct-proposal-inline .md,
+  .ct-proposal-inline .md p { display: inline; margin: 0; padding: 0; }
+  /* Give Tern's typeset SVG its own inline layout box; a fully inline md shrinks it. */
+  .ct-proposal-math:not(.ct-proposal-display) .sf-md { display: inline-block; vertical-align: baseline; margin: 0; padding: 0; }
+  .ct-proposal .math svg { width: auto; height: auto; max-width: none; }
+  .ct-proposal-display { margin: 8px 0; text-align: center; }
+  .ct-proposal-display .math-display { display: inline-block; }
+  .ct-proposal-display.ct-proposal-ins { background: transparent; }
+  .ct-proposal-display.ct-proposal-ins .math-display { background: var(--ct-proposal-added-bg); }
+  .sf.sf-col[data-role="omp.assistant"] .ct-proposal .ct-proposal-del .sf-md * { color: var(--bad); }
+  .sf.sf-col[data-role="omp.assistant"] .ct-proposal .ct-proposal-ins .sf-md * { color: var(--sf-c-ins, var(--good)); }
+  .ct-proposal-del .math, .ct-proposal-del .math-display { position: relative; }
+  .ct-proposal-del .math { display: inline-block; }
+  .ct-proposal-del .math::after, .ct-proposal-del .math-display::after {
+    content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: currentColor;
+  }
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md {
     font-family: var(--ct-prose);
-    font-size: 16px;
-    line-height: 24px;
+    font-size: 17px;
+    line-height: 29px;
     letter-spacing: 0;
     color: var(--t1);
   }
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md p { margin: 0; }
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md strong,
+  .sf.sf-card[data-role="omp.user"] .sf-md .md strong { font-weight: 600; }
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md h1,
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md h2,
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md h3,
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md h4 {
     font-family: var(--ct-prose) !important;
-    font-weight: 700;
-    line-height: 24px;
-    margin: 8px 0 0;
+    font-weight: 600;
+    line-height: 29px;
+    margin: 10px 0 0;
     letter-spacing: 0;
   }
-  .sf.sf-col[data-role="omp.assistant"] .sf-md .md h1 { font-size: 22px !important; line-height: 28px; }
-  .sf.sf-col[data-role="omp.assistant"] .sf-md .md h2 { font-size: 20px !important; line-height: 26px; }
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md h1 { font-size: 22px !important; line-height: 32px; }
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md h2 { font-size: 20px !important; line-height: 30px; }
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md h3,
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md h4 { font-size: 18px !important; }
   .sf.sf-col[data-role="omp.assistant"] .sf-md > .md:first-child > :first-child { margin-top: 0; }
@@ -53,7 +96,7 @@ export const appearanceStyles = css`
     padding-left: 28px;
   }
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md li { margin: 0; }
-  .sf.sf-col[data-role="omp.assistant"] .sf-md .md li + li { margin-top: 4px; }
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md li + li { margin-top: 6px; }
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md li p + p { margin-top: 8px; }
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md blockquote {
     margin: 0;
@@ -88,7 +131,7 @@ export const appearanceStyles = css`
     padding: 0;
     border: 0;
     background: var(--card);
-    font-family: "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+    font-family: var(--ct-prose);
     opacity: 0;
   }
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md .code:hover .code-head,
@@ -101,9 +144,10 @@ export const appearanceStyles = css`
   }
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md pre code { font-size: inherit; }
   .sf.sf-card[data-role="omp.user"] .sf-md .md {
-    font-family: "SF Pro Text", "PingFang SC", system-ui, sans-serif;
-    font-size: 14px;
-    line-height: 21px;
+    font-family: var(--ct-prose);
+    font-size: 17px;
+    line-height: 29px;
+    letter-spacing: 0;
   }
   .sf.sf-col[data-role="omp.editor"],
   .sf.sf-section[data-role="omp.queue"],
@@ -135,15 +179,18 @@ export const appearanceStyles = css`
     box-shadow: 0 2px 10px rgb(0 0 0 / 4%);
   }
   .sf.sf-col[data-role="omp.editor"] .sf-editor {
-    font-family: "SF Pro Text", "PingFang SC", system-ui, sans-serif;
-    font-size: 14px;
-    line-height: 22px;
+    font-family: var(--ct-prose);
+    font-size: 16px;
+    line-height: 26px;
+    letter-spacing: 0;
   }
   .sf.sf-col[data-role="omp.editor"] > [data-role="omp.composer.bar"] {
     padding: 2px 2px 0;
     min-height: 32px;
     gap: 4px 8px;
   }
+  /* Tern injects its own title/path here. Our model controls use this space. */
+  [data-role="omp.composer.bar"] > .sf-place { display: none; }
   .sf.sf-row[data-role="ct.composer.settings"] {
     min-width: 0;
     flex: 1 1 180px;
@@ -161,7 +208,7 @@ export const appearanceStyles = css`
     border: 0;
     box-shadow: none;
     background: transparent;
-    font-family: "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+    font-family: var(--ct-prose);
     font-size: 12px;
     line-height: 20px;
     color: var(--t2);
@@ -207,7 +254,7 @@ export const appearanceStyles = css`
     min-height: 22px;
     padding: 0 8px;
     gap: 8px;
-    font-family: "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+    font-family: var(--ct-prose);
     font-size: 11px;
     line-height: 18px;
     color: var(--t3);
@@ -230,7 +277,7 @@ export const appearanceStyles = css`
   .sf.sf-row[data-role="ct.working"] { flex-shrink: 0; font-size: 11px; }
   .sf.sf-row[data-role="ct.pending"],
   .sf.sf-el.ct-activity {
-    font-family: "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+    font-family: var(--ct-prose);
     font-size: 12px;
     line-height: 20px;
   }
@@ -310,7 +357,7 @@ export const appearanceStyles = css`
     border-radius: 8px;
     background: transparent;
     color: var(--t2);
-    font: 12px/18px "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+    font: 12px/18px var(--ct-prose);
     cursor: pointer;
   }
   .sf.sf-el.ct-button:not([aria-disabled="true"]):hover { background: var(--l2); color: var(--t1); }
@@ -328,7 +375,7 @@ export const appearanceStyles = css`
     border-radius: 14px;
     box-shadow: none;
     background: var(--card);
-    font: 13px/20px "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+    font: 13px/20px var(--ct-prose);
     color: var(--t2);
     max-height: 52vh;
     overflow-y: auto;
@@ -388,12 +435,12 @@ export const appearanceStyles = css`
     align-items: center;
     padding: 48px 16px 32px;
     gap: 12px;
-    font-family: "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+    font-family: var(--ct-prose);
   }
   .sf.sf-col[data-role="omp.welcome"] [data-role="ct.welcome.lockup"] { gap: 10px; }
   .sf.sf-col[data-role="omp.welcome"] [data-role="ct.logo"],
   .sf.sf-col[data-role="omp.welcome"] [data-role="ct.logo"] .ico { width: 28px; height: 28px; }
-  .sf.sf-col[data-role="omp.welcome"] [data-role="ct.welcome.wordmark"] { font: 600 24px/30px "SF Pro Text", system-ui, sans-serif; letter-spacing: -0.5px; }
+  .sf.sf-col[data-role="omp.welcome"] [data-role="ct.welcome.wordmark"] { font: 600 24px/30px var(--ct-prose); letter-spacing: -0.5px; }
   .sf.sf-col[data-role="omp.welcome"] [data-role="ct.welcome.prompt"] { font-size: 14px; line-height: 22px; color: var(--t3); text-align: center; }
   .sf.sf-row[data-role="ct.composer.actions"] > .sf-icon:focus-visible,
   .sf.sf-col[data-role="omp.editor"] [data-role="omp.composer.model"]:focus-visible,
