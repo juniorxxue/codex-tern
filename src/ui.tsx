@@ -8,7 +8,8 @@ import { readSystemClipboard } from './clipboard/system';
 import { markdownFileLinks } from './clipboard/files';
 import { EnhancedPasteController } from './clipboard/enhanced-paste';
 import { ClipboardInput } from './clipboard/input';
-import { Controller, type DisplayItem, type PendingRequest } from './controller';
+import { Controller, type DisplayItem, type PendingRequest, type Completion } from './controller';
+import { completionNotification } from './notifications';
 import { FolderSessions } from './folder-sessions';
 import { sessionInUse } from './session-locks';
 import { Draft } from './draft';
@@ -60,7 +61,8 @@ export class NativeUI {
   private pasting = 0;
   private failedPreviews = new Set<string>();
   private deferredKeys: Key[] = [];
-  panel: 'history' | 'models' | 'effort' | 'workspace' | 'attach' | 'details' | 'help' | 'diff' | 'menu' | null = null;
+  panel: 'history' | 'models' | 'effort' | 'send-mode' | 'workspace' | 'attach' | 'rename' | 'details' | 'help' | 'diff' | 'menu' | null = null;
+  private renaming?: { id: string; saving: boolean; error: string };
   allThreads = false;
   historyLoading = false;
   answerTarget: { requestId: string | number; questionId: string } | null = null;
@@ -80,6 +82,13 @@ export class NativeUI {
   private sidebarNavigation?: { request: string; target: string; pending: boolean };
   openProject?: (cwd: string, resume?: string) => Promise<boolean>;
   private readonly projectDirectory: string;
+  private composerThread?: string;
+  private completion?: Completion;
+  private completionTimer?: ReturnType<typeof setTimeout>;
+  private visible = true;
+  notify: (event: Completion) => void = event => {
+    if (process.stdout.isTTY) process.stdout.write(completionNotification(event));
+  };
 
   constructor(readonly c: Controller, readonly session: Session, readonly surface: Surface,
     readonly enhanced?: EnhancedPasteController, readonly clipboardInput?: ClipboardInput) {
@@ -87,7 +96,56 @@ export class NativeUI {
     surface.stylesheet('codex-tern-appearance', appearanceStyles);
     this.projectDirectory = c.cwd;
     this.folderSessions = new FolderSessions(c, () => this.schedule());
-    c.on('change', () => this.schedule());
+    c.on('change', this.onChange);
+    c.on('completion', this.onCompletion);
+  }
+
+  private onChange = () => {
+    if (this.completion && (this.c.sessionStatus(this.completion.threadId).running
+      || (this.completion.threadId === this.c.thread?.id && ['Sending…', 'Steering…'].includes(this.c.operation)))) {
+      this.completion = undefined;
+      if (this.completionTimer) clearTimeout(this.completionTimer);
+    }
+    this.schedule();
+  };
+  private onCompletion = (event: Completion) => {
+    if (this.ended) return;
+    if (this.c.notifications) {
+      this.completion = event;
+      if (this.completionTimer) clearTimeout(this.completionTimer);
+      this.completionTimer = setTimeout(() => { this.completion = undefined; this.schedule(); }, 8000);
+      this.notify(event);
+    }
+    if (event.threadId === this.c.thread?.id && this.visible) this.c.markRead(event.threadId);
+    this.schedule();
+  };
+  private saveComposer(id: string, composer: Composer, savedDraft: Draft | null = null) {
+    this.c.saveDraft(id, { text: (savedDraft ?? composer.draft).submittedText, images: [...composer.images] });
+  }
+  private syncComposer() {
+    const id = this.c.thread?.id;
+    if (!id) return;
+    if (this.composerThread !== id) {
+      if (this.composerThread) {
+        this.saveComposer(this.composerThread, this.composer, this.savedDraft);
+        this.sessionDrafts.set(this.composerThread, { composer: this.composer, answerTarget: this.answerTarget, savedDraft: this.savedDraft });
+      }
+      const saved = this.sessionDrafts.get(id), recovered = this.c.savedDraft(id);
+      if (saved) {
+        this.composer = saved.composer; this.answerTarget = saved.answerTarget; this.savedDraft = saved.savedDraft;
+      } else if (this.composerThread || recovered) {
+        const earlyText = !this.composerThread ? this.composer.draft.submittedText : '';
+        const earlyImages = !this.composerThread ? this.composer.images : [];
+        this.composer = new Composer(); this.answerTarget = null; this.savedDraft = null;
+        this.draft.set([recovered?.text, earlyText].filter(Boolean).join('\n\n'));
+        this.images = [...(recovered?.images ?? []), ...earlyImages];
+      }
+      this.composerThread = id;
+      if (this.visible) this.c.markRead(id);
+    }
+    this.saveComposer(id, this.composer, this.savedDraft);
+    for (const [other, saved] of this.sessionDrafts) if (other !== id)
+      this.saveComposer(other, saved.composer, saved.savedDraft);
   }
 
   private schedule() {
@@ -109,8 +167,10 @@ export class NativeUI {
   }
   private hasSessionDraft(id: string) {
     const saved = this.sessionDrafts.get(id);
+    const recovered = this.c.savedDraft(id);
     return id === this.c.thread?.id ? !!(this.draft.text || this.images.length || this.answerTarget)
-      : !!(saved?.composer.draft.text || saved?.composer.images.length || saved?.answerTarget);
+      : saved ? !!(saved.composer.draft.text || saved.composer.images.length || saved.answerTarget)
+        : !!(recovered?.text || recovered?.images.length);
   }
   private async archiveSession(id?: string) {
     if (!id || !this.folderSessions.contains(id)) throw new Error('This session is no longer in the current folder.');
@@ -121,6 +181,28 @@ export class NativeUI {
     const at = rows.findIndex(row => row.id === id);
     const replacement = [...rows.slice(at + 1), ...rows.slice(0, at).reverse()].find(row => !row.locked)?.id;
     if (await this.navigate(() => this.c.archiveThread(id, replacement))) this.sessionDrafts.delete(id);
+  }
+  private openRenameSession(id?: string) {
+    const thread = id ? this.folderSessions.get(id) : undefined;
+    if (!thread || this.c.isArchived(thread.id)) throw new Error('This session is no longer in the current folder.');
+    if (this.panel || this.pasting) throw new Error('Finish the paste or close the open dialog before renaming.');
+    if (this.c.connection !== 'ready' || this.c.selecting) throw new Error('Wait for the session to finish connecting.');
+    this.renaming = { id: thread.id, saving: false, error: '' };
+    this.openPanel('rename', thread.name || thread.preview || '');
+  }
+  private async confirmRename() {
+    const target = this.renaming, name = this.dialogDraft.text.trim();
+    if (this.panel !== 'rename' || !target || target.saving || !name) return;
+    target.saving = true; target.error = ''; this.render();
+    try {
+      if (!this.folderSessions.contains(target.id)) throw new Error('This session is no longer in the current folder.');
+      await this.c.renameThread(target.id, name);
+      if (this.renaming === target) this.closePanel();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (this.renaming === target) target.error = message;
+      else this.c.notice(`Could not rename session: ${message}`, true);
+    } finally { target.saving = false; this.render(); }
   }
   private async resumeFromSidebar(value?: string) {
     let id = value;
@@ -164,25 +246,26 @@ export class NativeUI {
       return this.openProject(cwd);
     return this.navigate(() => this.c.newThread(cwd));
   }
+  async forkSession(threadId: string, turnId: string): Promise<boolean> {
+    if (this.panel || this.pasting || this.c.operation || this.c.thread?.id !== threadId) return false;
+    return this.navigate(() => this.c.forkThread(threadId, turnId), undefined, true);
+  }
 
-  private async navigate(change: () => Promise<void>, id?: string): Promise<boolean> {
-    const previous = this.c.thread?.id;
-    const composer = this.composer;
-    const answerTarget = this.answerTarget, savedDraft = this.savedDraft;
+  private async navigate(change: () => Promise<void>, id?: string, reportError = false): Promise<boolean> {
+    this.syncComposer();
     this.folderSessions.clearError();
     try { await change(); return true; }
     catch (error) {
       if (id && sessionInUse(error)) this.folderSessions.markLocked(id);
-      else this.folderSessions.fail(error instanceof Error ? error.message : String(error));
+      else {
+        const message = error instanceof Error ? error.message : String(error);
+        this.folderSessions.fail(message);
+        if (reportError) this.c.notice(message, true);
+      }
       return false;
     }
     finally {
-      if (previous && this.c.thread?.id !== previous) {
-        this.sessionDrafts.set(previous, { composer, answerTarget, savedDraft });
-        const saved = this.sessionDrafts.get(this.c.thread!.id);
-        this.composer = saved?.composer ?? new Composer();
-        this.answerTarget = saved?.answerTarget ?? null; this.savedDraft = saved?.savedDraft ?? null;
-      }
+      this.syncComposer();
       this.render(); this.focusComposer();
       if (this.pendingSession) {
         const next = this.pendingSession; this.pendingSession = undefined;
@@ -190,19 +273,20 @@ export class NativeUI {
       }
     }
   }
-  private closePanel() { this.panel = null; this.render(); this.focusComposer(); }
-  private openPanel(panel: NonNullable<NativeUI['panel']>) {
+  private closePanel() { this.panel = null; this.renaming = undefined; this.render(); this.focusComposer(); }
+  private openPanel(panel: NonNullable<NativeUI['panel']>, text = '') {
     if (this.pasting) { this.c.notice('Wait for the paste to finish.'); return; }
     this.panel = panel; this.dialogDraft = new Draft();
     this.pickerSelected = panel === 'models' ? this.c.model : panel === 'effort' ? this.c.effort
-      : panel === 'history' ? this.c.thread?.id ?? '' : '';
+      : panel === 'send-mode' ? this.sendMode : panel === 'history' ? this.c.thread?.id ?? '' : '';
     if (panel === 'history') {
       this.historyLoading = true;
       this.action(async () => { try { await this.c.listThreads(this.allThreads); } finally { this.historyLoading = false; this.render(); } });
     }
     if (panel === 'workspace') this.dialogDraft.set(this.c.cwd);
+    else if (panel === 'rename') this.dialogDraft.set(text);
     this.render();
-    if (panel === 'workspace' || panel === 'attach') {
+    if (panel === 'workspace' || panel === 'attach' || panel === 'rename') {
       this.focused = 'layer.panel.body.field'; this.surface.focus(this.focused);
     } else { this.focused = ''; this.surface.focus(null); }
   }
@@ -222,6 +306,9 @@ export class NativeUI {
         item.id === entry.id && item.turnId === entry.turnId && item.done &&
         item.item.type === 'agentMessage' && item.item.text === text);
     const disabled = !available();
+    const forkable = this.c.forkReply(entry.turnId)?.id === entry.id;
+    const forkEnabled = () => !!threadId && this.c.thread?.id === threadId && this.c.sessionReady
+      && !this.c.operation && !this.panel && !this.pasting && this.c.forkReply(entry.turnId)?.id === entry.id;
     let number = 0;
     return <col key={entry.id} role="omp.assistant" gap="xs">
       {parts.map(part => {
@@ -257,6 +344,13 @@ export class NativeUI {
           }}>Apply selected edits</html.button>
         <html.span class="ct-proposal-count" text={`${selected().length} selected`} />
       </html.div>}
+      {forkable && <row key="actions" role="ct.reply.actions" gap="sm" align="center">
+        <html.button key="fork" class="ct-reply-action" role="ct.reply.fork" aria="Fork from here"
+          title="Start a new session with the conversation up to this reply"
+          attrs={{ 'aria-disabled': !forkEnabled() }} onClick={() => {
+            if (forkEnabled()) void this.forkSession(threadId!, entry.turnId);
+          }}><icon name="branch" /><text text="Fork from here" /></html.button>
+      </row>}
     </col>;
   }
 
@@ -413,18 +507,20 @@ export class NativeUI {
   }
 
   render() {
-    if (this.ended || this.surface.closed) return;
+    if (this.ended) return;
+    this.syncComposer();
+    if (this.surface.closed) return;
     const c = this.c;
     this.draft.onUpdate = () => this.schedule(); this.dialogDraft.onUpdate = () => this.schedule();
     this.draft.context = { cols: this.session.caps.cols, dark: this.session.caps.dark,
       reduceMotion: this.session.caps.reduceMotion, supports: kind => this.session.caps.kinds.includes(kind),
       feature: name => this.session.caps.features.includes(name as any) };
     this.draft.setWorkspace(c.cwd);
-    const ready = c.connection === 'ready' && !!c.thread && !c.operation && !this.pasting && !c.unconfirmed.length;
+    const ready = c.sessionReady && !!c.thread && !c.operation && !this.pasting && !c.unconfirmed.length;
     const pendingQuestion = this.answerTarget && c.requests.find(r => r.id === this.answerTarget!.requestId);
     if (this.answerTarget && !pendingQuestion) this.finishAnswer();
-    const sendEnabled = !this.panel && !this.draft.completing &&
-      (!!this.draft.submittedText.trim() || (!this.answerTarget && this.images.length > 0));
+    const hasInput = !!this.draft.submittedText.trim() || (!this.answerTarget && this.images.length > 0);
+    const sendEnabled = !this.panel && !this.draft.completing && hasInput;
     const displayModel = c.models.find(m => m.model === c.model)?.displayName ?? c.model;
     const parts = transcriptParts(c.items);
     const latestActivity = parts.findLast(p => p.kind === 'activity' && p.turnId === c.activeTurn);
@@ -433,6 +529,12 @@ export class NativeUI {
     this.surface.render({
       // Messages remain direct children for Tern's native conversation layout.
       main: <col>
+        {c.thread?.forkedFromId && <row key="origin" role="ct.fork.origin" gap="sm" align="center" wrap>
+          <icon name="branch" /><text tone="muted" text="Forked conversation" />
+          <html.button class="ct-reply-action" aria="Open source session" attrs={{ 'aria-disabled': c.selecting || !!this.panel }}
+            onClick={() => { const id = c.thread?.forkedFromId; if (id && !c.selecting && !this.panel) this.action(() => this.openSession(id)); }}>
+            Open source</html.button>
+        </row>}
         {!c.items.length && <Welcome />}
         {c.historyCursor && <text key="earlier" tone="muted" text="Load earlier messages"
           onClick={() => this.action(() => c.loadHistory())} />}
@@ -452,14 +554,30 @@ export class NativeUI {
           sidebarRequest: this.sidebarRequested ? this.clientInstance : undefined,
           cellWidth: this.session.caps.cell.w,
           rows: this.folderSessions.snapshot.rows.map(row => ({ ...row, canArchive: row.canArchive && !this.hasSessionDraft(row.id) })),
-          archiveProtocol: 1, navigationProtocol: 1, newSessionProtocol: 1, navigation: this.sidebarNavigation })}
+          archiveProtocol: 1, renameProtocol: 1, navigationProtocol: 1, newSessionProtocol: 1, navigation: this.sidebarNavigation })}
           onAction={{ refresh: () => { void this.folderSessions.refresh(); },
             locks: () => { void this.folderSessions.refreshLocks(); },
             more: () => { void this.folderSessions.refresh(true); },
             hide: () => this.folderSessions.hide(),
             new: () => this.action(() => this.newSession()),
             archive: e => this.action(() => this.archiveSession(e.value)),
+            rename: e => this.action(async () => this.openRenameSession(e.value)),
             resume: e => { void this.resumeFromSidebar(e.value); } }} />
+        {this.completion && <row key="completion" role="ct.completion" gap="sm" align="center">
+          <icon key="icon" name={this.completion.status === 'completed' ? 'check' : 'warn'} role="ct.completion.icon" />
+          <text key="label" grow={1} lines={1} text={`${this.completion.status === 'completed' ? 'Task complete' : 'Task failed'}${this.completion.threadId === c.thread?.id ? '' : ` · ${this.completion.title}`}`} />
+          {this.completion.threadId !== c.thread?.id && <html.button key="view" class="ct-completion-action" onClick={() => {
+            const target = this.completion?.threadId;
+            if (target) this.action(async () => { if (await this.openSession(target)) this.completion = undefined; });
+          }}>View</html.button>}
+          <icon key="dismiss" name="x" aria="Dismiss completion" title="Dismiss" onClick={() => { this.completion = undefined; this.render(); }} />
+        </row>}
+        {(c.connection === 'disconnected' || (c.connection === 'ready' && !c.sessionReady && !c.selecting)) && <row key="reconnect" role="ct.reconnect" gap="sm" align="center">
+          <icon name="warn" /><text grow={1} text={c.connection === 'disconnected'
+            ? 'Disconnected · Your draft is kept' : 'Session unavailable · Your draft is kept'} />
+          <html.button class="ct-completion-action" onClick={() => this.action(() => c.connection === 'ready' && c.thread
+            ? c.resume(c.thread.id) : c.reconnect())}>{c.connection === 'disconnected' ? 'Reconnect' : 'Retry'}</html.button>
+        </row>}
         {c.requests.map(r => this.renderRequest(r))}
         {!!c.unconfirmed.length && <section key="unconfirmed" head="Message delivery unconfirmed">
           <text text="Codex may have received this message. Check the conversation before deciding to retry." />
@@ -518,13 +636,15 @@ export class NativeUI {
               })} />
               <icon key="history" name="history" title="Sessions · Ctrl+L" aria="Sessions" onClick={() => this.openPanel('history')} />
               <icon key="more" name="more" title="More actions" aria="More actions" onClick={() => this.openPanel('menu')} />
-              {c.activeTurn && <row key="mode" role="omp.composer.effort" gap="xs" title="Steer now or queue a follow-up"
-                onClick={() => { this.sendMode = this.sendMode === 'steer' ? 'queue' : 'steer'; this.render(); }}>
+              {c.activeTurn && !this.answerTarget && <html.button key="mode" role="ct.composer.mode"
+                aria={`Send mode: ${this.sendMode === 'steer' ? 'Steer' : 'Queue'}`} title="Choose how to send while running"
+                attrs={{ 'aria-haspopup': 'dialog', 'aria-expanded': this.panel === 'send-mode' }}
+                onClick={() => this.openPanel('send-mode')}>
                 <text text={this.sendMode === 'steer' ? 'Steer' : 'Queue'} /><icon name="chev" />
-              </row>}
-              {c.activeTurn && <text key="stop" role="omp.composer.stop" text="Stop" tone="error" title="Stop · Ctrl+C"
-                onClick={() => this.action(() => c.stop())} />}
-              {ready && <html.button key="send" role="omp.composer.send" class="ct-send" attrs={{ 'aria-disabled': !sendEnabled }}
+              </html.button>}
+              {c.activeTurn && <html.button key="stop" role="omp.composer.stop" class="ct-stop" aria="Stop current turn" title="Stop · Ctrl+C"
+                onClick={() => this.action(() => c.stop())}><html.span class="ct-stop-mark" attrs={{ 'aria-hidden': true }} /></html.button>}
+              {ready && (!c.activeTurn || hasInput) && <html.button key="send" role="omp.composer.send" class="ct-send" attrs={{ 'aria-disabled': !sendEnabled }}
                 aria={this.answerTarget ? 'Save answer' : 'Send message'}
                 title={this.answerTarget ? 'Save answer' : c.activeTurn ? this.sendMode === 'steer' ? 'Steer current turn' : 'Queue follow-up' : 'Send · Enter'}
                 onClick={sendEnabled ? () => { void this.send(); } : undefined}><icon name="arrow-up" /></html.button>}
@@ -549,7 +669,7 @@ export class NativeUI {
       layer: <col>{!this.panel && (this.draft.describe().c ?? []).filter((n): n is import('@oh-my-pi/pi-tui/native/node').NativeNode => 'k' in n && n.k === 'overlay')
         .map(n => ompNode(n, this.draft.context, () => this.render()))}
         {this.isPicker() ? this.renderPicker() : this.panel && <overlay key="panel" anchor="center" size={this.panel === 'diff' ? 'lg' : 'md'} modal head={this.panelTitle()}>
-        <col key="body" gap="sm">{this.renderPanel()}<rule />{this.button('Close · Esc', () => this.closePanel())}</col>
+        <col key="body" gap="sm">{this.renderPanel()}<rule />{this.button(this.panel === 'rename' ? 'Cancel · Esc' : 'Close · Esc', () => this.closePanel())}</col>
       </overlay>}</col>,
     });
   }
@@ -560,7 +680,7 @@ export class NativeUI {
     return short.length > 52 ? '…/' + short.split('/').slice(-3).join('/') : short;
   }
 
-  private isPicker() { return ['history', 'models', 'effort', 'menu'].includes(this.panel ?? ''); }
+  private isPicker() { return ['history', 'models', 'effort', 'send-mode', 'menu'].includes(this.panel ?? ''); }
 
   private pickerItems(): PickerItem[] {
     const c = this.c;
@@ -573,6 +693,10 @@ export class NativeUI {
       case 'effort': items = (c.models.find(m => m.model === c.model)?.supportedReasoningEfforts ?? []).map(o => ({
         id: o.reasoningEffort, label: o.reasoningEffort, detail: o.description, icon: 'brain',
         badges: c.effort === o.reasoningEffort ? [{ text: 'Current', tone: 'accent' }] : undefined })); break;
+      case 'send-mode': items = [
+        { id: 'steer', label: 'Steer', detail: 'Add input to the current turn.' },
+        { id: 'queue', label: 'Queue', detail: 'Send after the current turn finishes.' },
+      ]; break;
       default: items = [
         { id: 'new', label: 'New session', icon: 'plus', detail: 'Ctrl+Shift+N' },
         { id: 'history', label: 'Resume session', icon: 'history', detail: 'Ctrl+L' },
@@ -582,6 +706,7 @@ export class NativeUI {
         { id: 'effort', label: 'Reasoning effort', icon: 'brain' },
         ...(c.diff ? [{ id: 'diff', label: 'View changes', icon: 'diff' }] : []),
         { id: 'details', label: 'Session details', icon: 'info' },
+        { id: 'notifications', label: c.notifications ? 'Turn off completion reminders' : 'Turn on completion reminders', icon: 'bell' },
         { id: 'editing', label: this.draft.vim ? 'Use standard editing' : 'Enable Vim editing', icon: 'keyboard' },
         { id: 'help', label: 'Keyboard shortcuts', icon: 'keyboard' },
       ];
@@ -596,7 +721,8 @@ export class NativeUI {
     return <picker key="panel" size="md" layout="rows" preview="none" title={this.panelTitle()} icon={this.panel === 'models' ? 'model' : this.panel === 'history' ? 'history' : 'search'}
       query={this.dialogDraft.text} cursor={this.dialogDraft.cursor} placeholder="Type to filter…" focus="list"
       items={items} selected={this.pickerSelected} empty="No matches" state={this.historyLoading && this.panel === 'history' ? 'loading' : 'ready'}
-      current={this.panel === 'models' ? [this.c.model] : this.panel === 'effort' ? [this.c.effort] : this.panel === 'history' ? [this.c.thread?.id ?? ''] : []}
+      current={this.panel === 'models' ? [this.c.model] : this.panel === 'effort' ? [this.c.effort]
+        : this.panel === 'send-mode' ? [this.sendMode] : this.panel === 'history' ? [this.c.thread?.id ?? ''] : []}
       actions={[
         { id: 'confirm', label: this.panel === 'history' ? 'Resume' : 'Select', keys: ['enter'], primary: true, disabled: items.length ? undefined : true },
         ...(this.panel === 'history' ? [{ id: 'scope', label: this.allThreads ? 'All workspaces' : 'This workspace', on: this.allThreads },
@@ -618,17 +744,31 @@ export class NativeUI {
     if (this.panel === 'history') this.action(async () => { this.closePanel(); await this.openSession(id); });
     else if (this.panel === 'models') this.action(async () => { this.c.chooseModel(id); this.closePanel(); });
     else if (this.panel === 'effort') this.action(async () => { this.c.chooseEffort(id as ReasoningEffort); this.closePanel(); });
+    else if (this.panel === 'send-mode' && (id === 'steer' || id === 'queue')) { this.sendMode = id; this.closePanel(); }
     else if (id === 'new') this.action(async () => { this.closePanel(); await this.newSession(); });
     else if (id === 'editing') { this.draft.setVim(!this.draft.vim); this.closePanel(); }
+    else if (id === 'notifications') {
+      this.c.setNotifications(!this.c.notifications); this.completion = undefined; this.closePanel();
+    }
     else this.openPanel(id as NonNullable<NativeUI['panel']>);
   }
 
   private panelTitle() {
-    return ({ history: 'Sessions', models: 'Select model', effort: 'Reasoning effort', workspace: 'Workspace', attach: 'Attach image', details: 'Session details', help: 'Getting started', diff: 'Changes', menu: 'Actions' })[this.panel!];
+    return ({ history: 'Sessions', models: 'Select model', effort: 'Reasoning effort', 'send-mode': 'Send while running', workspace: 'Workspace', attach: 'Attach image', rename: 'Rename session', details: 'Session details', help: 'Getting started', diff: 'Changes', menu: 'Actions' })[this.panel!];
   }
   private renderPanel() {
     const c = this.c;
     switch (this.panel) {
+      case 'rename': return <>
+        <input key="field" role="ct.session.name" aria="Session name" text={this.dialogDraft.text}
+          cursor={this.dialogDraft.cursor} anchor={this.dialogDraft.anchor} placeholder="Session name"
+          onEdit={e => { if (!this.renaming?.saving) this.dialogDraft.nativeEdit(e); this.render(); }}
+          onUndo={() => { if (!this.renaming?.saving) this.dialogDraft.undo(); this.render(); }}
+          onFocus={() => { this.focused = 'layer.panel.body.field'; this.surface.focus(this.focused); }} />
+        {!!this.renaming?.error && <text role="ct.rename.error" tone="error" text={this.renaming.error} />}
+        {this.button(this.renaming?.saving ? 'Saving…' : 'Save name', () => { void this.confirmRename(); }, 'ct-primary',
+          !!this.renaming?.saving || !this.dialogDraft.text.trim())}
+      </>;
       case 'workspace': case 'attach': return <>
         <text tone="muted" text={this.panel === 'workspace' ? 'Start a new session in this directory. Codex keeps the current session.' : 'Enter the full path to an image to attach it to your next message.'} />
         <input key="field" text={this.dialogDraft.text} cursor={this.dialogDraft.cursor} anchor={this.dialogDraft.anchor}
@@ -773,6 +913,7 @@ export class NativeUI {
       this.finishAnswer(); this.render(); return;
     }
     if (!text.trim() && !this.images.length) return;
+    if (!this.c.sessionReady) { this.c.notice('Reconnect and open this session before sending.'); return; }
     if (this.c.operation) return;
     if (this.c.unconfirmed.length) { this.c.notice('Check the unconfirmed message before sending again.'); return; }
     const composer = this.composer, threadId = this.c.thread?.id;
@@ -782,6 +923,7 @@ export class NativeUI {
     try { await this.c.submit(input.text, input.images, this.sendMode); input.draft.addHistory(text); }
     catch (e) {
       if (!(e instanceof RpcOutcomeUnknown) && !composer.restore(input)) this.c.preserveInput(threadId, input.text, input.images);
+      if (threadId) this.saveComposer(threadId, composer);
       this.c.sessionNotice(threadId, e instanceof Error ? e.message : String(e), true);
     }
     this.render(); this.focusComposer();
@@ -820,8 +962,9 @@ export class NativeUI {
         this.render();
         return true;
       }
-      if (this.panel === 'workspace' || this.panel === 'attach') {
-        if (key.name === 'enter') this.action(() => this.confirmPath()); else this.dialogDraft.key(key);
+      if (this.panel === 'workspace' || this.panel === 'attach' || this.panel === 'rename') {
+        if (key.name === 'enter') this.action(() => this.panel === 'rename' ? this.confirmRename() : this.confirmPath());
+        else if (!this.renaming?.saving) this.dialogDraft.key(key);
         this.render();
       }
       return true;
@@ -844,6 +987,10 @@ export class NativeUI {
       for await (const input of this.session) {
         if (input.type === 'event') {
           if (input.event.ev === 'error') this.c.notice(`Tern: ${input.event.msg}`, true);
+          if (input.event.ev === 'visible') {
+            this.visible = input.event.visible;
+            if (this.visible && this.c.thread) this.c.markRead(this.c.thread.id);
+          }
           continue;
         }
         if (!this.handleKey(input.key)) break;
@@ -855,8 +1002,13 @@ export class NativeUI {
   }
 
   async close() {
+    this.syncComposer();
     this.ended = true; this.folderSessions.dispose(); this.enhanced?.disable();
+    this.c.off('change', this.onChange);
+    this.c.off('completion', this.onCompletion);
+    if (this.completionTimer) clearTimeout(this.completionTimer);
     if (this.renderTimer) clearTimeout(this.renderTimer);
+    await this.c.flushRecovery().catch(error => { process.stderr.write(`Draft recovery: ${error.message}\n`); });
     await this.session.close(); this.clipboardInput?.dispose();
   }
 }

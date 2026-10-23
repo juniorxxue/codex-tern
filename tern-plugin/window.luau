@@ -1,8 +1,10 @@
 -- The client owns Codex RPC. This panel reads only its explicit list snapshot
 -- and sends UI actions back through Tern; it never sends a prompt or starts Codex.
 local PREFIX = "codex-tern.sessions/v1:"
+local widths = require("./sidebar-width")
 local panels = {}
 local timer = nil
+local width_timer = nil
 local fast_until = 0
 local selection_seq = 0
 
@@ -57,17 +59,15 @@ local function view(snapshot, selection)
       table.insert(title.c, {k = "icon", p = {key = "status", name = "bell", role = "codex-tern.sessions.waiting", title = "Needs your input"}})
     elseif item.running and (not selection or item.id ~= current or selection.running) then
       table.insert(title.c, {k = "spinner", p = {key = "status", role = "codex-tern.sessions.running", title = "Working"}})
+    elseif item.failed then
+      table.insert(title.c, {k = "icon", p = {key = "status", name = "warn", role = "codex-tern.sessions.failed", title = "Task failed · Open to review"}})
+    elseif item.completed then
+      table.insert(title.c, {k = "icon", p = {key = "status", name = "check", role = "codex-tern.sessions.completed", title = "Task complete · Unread"}})
     end
-    local can_delete = snapshot.archiveProtocol == 1 and item.canArchive and not locked
-    table.insert(title.c, {k = "icon", p = {key = "delete", name = "trash", role = "codex-tern.sessions.delete",
-      aria = "Delete session", mark = if can_delete then nil else "disabled",
-      title = if snapshot.archiveProtocol ~= 1 then "Restart the Codex client to enable deleting sessions"
-        elseif not can_delete then "Finish this session's task, answers, queue and draft before deleting"
-        else "Delete session (move to archive)",
-      actions = {click = (if can_delete then "archive=" else "archive-disabled=") .. item.id}}})
     table.insert(rows, {k = "col", p = {key = item.id, role = "codex-tern.sessions.item",
       mark = if item.id == current then "pick" elseif locked then "locked" else nil,
-      title = item.title, actions = if locked then nil else {click = "resume=" .. item.id}}, c = {
+      title = item.title, actions = {click = if locked then nil else "resume=" .. item.id,
+        menu = {"Rename session", "Delete session"}}}, c = {
         title,
       }})
   end
@@ -126,6 +126,9 @@ local function update(cx, pane, entry)
     if entry.raw ~= "closed" then
       cx.canvas:set(pane, {view = {k = "text", p = {role = "codex-tern.sessions.note", text = "The Codex client is closed."}}})
       entry.raw = "closed"
+      -- The closed placeholder replaced the list, even if recovery later loads
+      -- an identical snapshot. The next live frame must rebuild that list.
+      entry.view = nil
       entry.selection = nil
     end
     return
@@ -177,8 +180,21 @@ local function poll(fast)
   end)
 end
 
+local function watch_widths()
+  if width_timer or next(panels) == nil then return end
+  -- Tern has no divider-change event. Keep this cheap layout check separate
+  -- from content polling, including when the Codex client has been closed.
+  width_timer = tern.timer(200, function(cx)
+    width_timer = nil
+    if cx then widths.sync(cx, panels) end
+    watch_widths()
+  end)
+end
+
 local function open(cx, automatic_target)
   remember(cx)
+  widths.sync(cx, panels)
+  watch_widths()
   local focused = cx.session:focused()
   local target = automatic_target or (if focused and panels[focused] then panels[focused].target else focused)
   local tab = if focused then cx.session:tab_of(focused) else nil
@@ -202,26 +218,9 @@ local function open(cx, automatic_target)
     about = PREFIX .. tostring(target), how = "beside", focus = false})
   if not pane then cx:toast("error", "Could not open Codex sessions", err); return end
   cx.layout:move(pane, target, "left", {focus = false})
-  -- The layout uses Tern's window font; TSP cols may use a different cell size.
-  -- Measure one resize step against the actual split instead of mixing units.
-  local function pane_split(node)
-    if not node or node.pane then return nil end
-    if node.split == "right" and node[1] and node[1].pane == pane then return node end
-    return pane_split(node[1]) or pane_split(node[2])
-  end
-  local owner_tab = cx.session:tab_of(pane)
-  local layout = if owner_tab then cx.session:layout(owner_tab) else nil
-  local split = if layout then pane_split(layout.root) else nil
-  if split and split.ratio then
-    local before = split.ratio
-    cx.layout:resize(pane, "right", 1)
-    local after = pane_split(cx.session:layout(owner_tab).root)
-    local step = if after and after.ratio then after.ratio - before else 0
-    local width = (state.snapshot.cols or 120) * (state.snapshot.cellWidth or 8)
-    local desired = math.min(0.30, 420 / width)
-    if step > 0 then cx.layout:resize(pane, "right", math.round((desired - after.ratio) / step)) end
-  end
   panels[pane] = {target = target, raw = state.raw, view = view(state.snapshot), refreshed = tern.now(), locks_refreshed = tern.now()}
+  widths.initialize(cx, pane, panels[pane], state.snapshot)
+  watch_widths()
   send(cx, target, "refresh")
   poll(true)
 end
@@ -278,14 +277,42 @@ tern.on("canvas_action", function(ev, cx)
       cx.layout:focus(entry.target)
       poll(true)
     end
-  elseif ev.act == "archive" and ev.value then
+  elseif ev.act == "Rename session" then
     local state = bridge(cx, entry.target)
-    if state and state.snapshot.archiveProtocol == 1 then
+    if state then
       for _, row in state.snapshot.rows do
-        if row.id == ev.value and row.canArchive and not row.locked then
-          send(cx, entry.target, "archive", ev.value)
-          cx.layout:focus(entry.target)
-          poll(true)
+        if ev.node == "main.sessions." .. row.id then
+          if state.snapshot.renameProtocol ~= 1 then
+            cx:toast("info", "Exit the Codex client with Ctrl+Q, then run codex-tern again to enable renaming sessions.")
+          elseif not state.snapshot.canSwitch then
+            cx:toast("info", "Wait for the Codex session to finish connecting.")
+          else
+            send(cx, entry.target, "rename", row.id)
+            cx.layout:focus(entry.target)
+            poll(true)
+          end
+          break
+        end
+      end
+    end
+  elseif ev.act == "Delete session" or (ev.act == "archive" and ev.value) then
+    local state = bridge(cx, entry.target)
+    if state then
+      for _, row in state.snapshot.rows do
+        -- Menu labels stay readable; the keyed node identifies the clicked row.
+        if (ev.act == "Delete session" and ev.node == "main.sessions." .. row.id)
+          or (ev.act == "archive" and ev.value == row.id) then
+          if state.snapshot.archiveProtocol ~= 1 then
+            cx:toast("info", "Exit the Codex client with Ctrl+Q, then run codex-tern again to enable deleting sessions.")
+          elseif row.locked then
+            cx:toast("info", "This session is open in another client.")
+          elseif not row.canArchive then
+            cx:toast("info", "Finish this session's task, answers, queue and draft before deleting.")
+          else
+            send(cx, entry.target, "archive", row.id)
+            cx.layout:focus(entry.target)
+            poll(true)
+          end
           break
         end
       end
@@ -307,6 +334,8 @@ end)
 
 local function restore(cx)
   remember(cx)
+  widths.sync(cx, panels)
+  watch_widths()
   for pane, entry in panels do update(cx, pane, entry) end
   poll()
 end

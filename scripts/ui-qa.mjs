@@ -1,15 +1,19 @@
 // Native Tern UI regression tests, using a deterministic app-server fixture.
 // Real Codex is covered separately by smoke.ts and manual native conversations.
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import assert from 'node:assert/strict';
 import { rasterizeSvg } from '@oh-my-pi/pi-natives';
+import { prepareTernQaConfig } from './qa-tern-config.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const socket = `/tmp/codex-tern-ui-qa-${process.pid}.sock`;
 const out = resolve(root, '.prototype/ui-qa');
-await mkdir(out, { recursive: true });
+const config = resolve(out, `config-${process.pid}`);
+await prepareTernQaConfig(config);
+const wire = resolve(out, 'client-wire.jsonl');
+await writeFile(wire, '');
 const pause = ms => new Promise(r => setTimeout(r, ms));
 const results = [];
 const portrait = resolve(out, 'e4b9a62df315ae72c11619abef4f475c09ad47a2c0188b93669c1fb5a2a937dd.png');
@@ -19,7 +23,8 @@ for (const [path, width, height] of [[portrait, 1000, 1400], [landscape, 1400, 7
   await writeFile(path, await rasterizeSvg(Buffer.from(svg), width, height));
 }
 const server = spawn('tern', ['serve', '--control', socket, '--out', out, '--cwd', root], {
-  stdio: 'ignore', env: { ...process.env, XDG_CACHE_HOME: resolve(out, 'cache') },
+  stdio: 'ignore', env: { ...process.env, TERN_CONFIG_DIR: config, XDG_CACHE_HOME: resolve(out, 'cache'), XDG_STATE_HOME: resolve(out, `state-${process.pid}`),
+    QA_HISTORY_FILE: resolve(out, `history-${process.pid}.json`) },
 });
 function ctl(command) {
   const output = execFileSync('tern', ['ctl', '--control', socket, command], { encoding: 'utf8', timeout: 15_000 });
@@ -44,6 +49,14 @@ async function waitFor(check, description, ms = 10_000) {
   throw new Error(`Timed out: ${description}`);
 }
 function pass(name) { results.push(name); console.log(`PASS ${name}`); }
+async function assertNoTernErrors() {
+  // A startup error can disappear when the first conversation replaces the
+  // connecting state. Inspect every native event, not just the settled screen.
+  const events = (await readFile(wire, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+  assert.ok(events.some(event => event.dir === 'in' && event.verb === 'e'), 'native events were recorded');
+  const errors = events.filter(event => event.dir === 'in' && event.body?.ev === 'error').map(event => event.body);
+  assert.deepEqual(errors, [], 'Tern must accept the styles and surface frames without errors');
+}
 async function send(value) { type(value); key('enter'); }
 async function attachImage(path) {
   click('[aria-label="More actions"]');
@@ -73,8 +86,13 @@ async function editCase(name, initial, operations, expected) {
 
 try {
   await waitFor(() => { try { execFileSync('test', ['-S', socket]); return true; } catch { return false; } }, 'Tern control socket');
-  ctl(`run ${JSON.stringify(`${process.execPath} ${root}/dist/cli.mjs --codex ${root}/test/fixtures/ui-app-server.mjs`)}`);
+  const command = ['env', `TERN_TSP_RECORD=${wire}`, `QA_HISTORY_FILE=${resolve(out, `history-${process.pid}.json`)}`, process.execPath, `${root}/dist/cli.mjs`, '--codex',
+    `${root}/test/fixtures/ui-app-server.mjs`].map(value => "'" + value.replaceAll("'", "'\\''") + "'").join(' ');
+  ctl(`run ${JSON.stringify(command)}`);
   await waitFor(() => text('.sf-dock').includes('QA Model'), 'composer');
+  await assertNoTernErrors();
+  assert.equal(tree('[data-role="omp.error"]').length, 0);
+  pass('startup has no transient native errors');
   pass('launch and inherited model');
   const sendButton = '[data-role="omp.composer.send"]';
   assert.equal(tree('[data-role="omp.welcome"]').length, 1);
@@ -95,6 +113,9 @@ try {
   await send('QA_CITATION_FIXTURE');
   const citationLink = '[data-role="omp.assistant"] a';
   await waitFor(() => tree(citationLink).length === 1, 'assistant citation renders as a link');
+  await waitFor(() => text('[data-role="ct.completion"]').includes('Task complete'), 'completion reminder');
+  const completionBox = tree('[data-role="ct.completion"]')[0].rect;
+  assert.ok(completionBox[2] <= 736 && completionBox[3] <= 56, 'completion reminder stays compact');
   assert.ok(text(citationLink).includes('中文 [draft] (1) #?& 100%.txt'));
   assert.ok(text('[data-role="omp.assistant"] code').includes(':codex-file-citation'));
   ctl('shot assistant-file-citation');
@@ -172,11 +193,16 @@ try {
   assert.ok(text('.ct-activity-output').length < 100);
   assert.equal(tree('[data-role="ct.working"]').length, 0, 'the input area does not repeat Working');
   assert.ok(!text('.sf-dock').includes('Working'));
+  assert.equal(tree(sendButton).length, 0, 'an empty running composer shows Stop without a disabled Send');
+  const stopBox = tree('[data-role="omp.composer.stop"]')[0].rect;
+  const stopMark = tree('.ct-stop-mark')[0].rect;
+  assert.ok(Math.abs(stopMark[0] + stopMark[2] / 2 - stopBox[0] - stopBox[2] / 2) < 0.5, 'Stop is centered horizontally');
+  assert.ok(Math.abs(stopMark[1] + stopMark[3] / 2 - stopBox[1] - stopBox[3] / 2) < 0.5, 'Stop is centered vertically');
   for (const [w, h] of [[480, 640], [1280, 800]]) {
     ctl(`resize ${w} ${h}`);
     const bar = tree('[data-role="omp.composer.bar"]')[0].rect;
     for (const selector of ['[aria-label="New session"]', '[aria-label="Sessions"]', '[aria-label="More actions"]',
-      '[data-role="omp.composer.stop"]', '[data-role="omp.composer.send"]', '[title="Steer now or queue a follow-up"]']) {
+      '[data-role="omp.composer.stop"]', '[data-role="ct.composer.mode"]']) {
       const r = tree(selector)[0].rect;
       assert.ok(r[0] >= bar[0] && r[0] + r[2] <= bar[0] + bar[2] + 1, `${selector} fits the running toolbar at ${w}`);
       assert.ok(r[1] >= bar[1] && r[1] + r[3] <= bar[1] + bar[3] + 1, `${selector} stays in the toolbar at ${w}`);
@@ -185,7 +211,18 @@ try {
   }
   ctl('shot compact-running');
   pass('bounded live command preview, one Working status, and a unified toolbar at narrow and wide widths');
-  type('draft during work'); key('super+,');
+  type('draft during work');
+  await waitFor(() => tree(`${sendButton}[aria-disabled="false"]`).length === 1, 'a running draft shows Send beside Stop');
+  click('[data-role="ct.composer.mode"]');
+  await waitFor(() => text('.sf-layer').includes('Send while running'), 'send mode choices');
+  assert.ok(text('.sf-layer').includes('Steer') && text('.sf-layer').includes('Queue'));
+  assert.equal(text('[data-role="ct.composer.mode"]'), 'Steer', 'opening the picker does not change send mode');
+  ctl('wait 400'); ctl('shot send-mode-picker');
+  key('escape');
+  await waitFor(() => !text('.sf-layer').includes('Send while running'), 'send mode picker dismissed');
+  assert.equal(text('[data-role="ct.composer.mode"]'), 'Steer', 'Escape keeps the selected send mode');
+  assert.ok(text('.sf-ed-text').includes('draft during work'), 'choosing a send mode preserves the draft');
+  key('super+,');
   await waitFor(() => ctl('state').prefs !== null, 'terminal settings while running');
   key('escape'); await waitFor(() => ctl('state').prefs === null, 'closed terminal settings while running');
   assert.ok(text('.sf-ed-text').includes('draft during work'));
@@ -207,8 +244,10 @@ try {
 
   key('ctrl+shift+n'); await pause(100);
   await send('hold'); await waitFor(() => text('.ct-activity').includes('Working'), 'queue turn');
-  click('[title="Steer now or queue a follow-up"]');
-  await waitFor(() => text('.sf-dock').includes('Queue'), 'queue mode');
+  click('[data-role="ct.composer.mode"]');
+  await waitFor(() => text('.sf-layer').includes('Send while running'), 'choose queue mode');
+  type('Queue'); key('enter');
+  await waitFor(() => text('[data-role="ct.composer.mode"]') === 'Queue', 'queue mode');
   await send('queued follow up');
   await waitFor(() => text('[data-role="omp.queue"]').includes('queued follow up'), 'queued message');
   click('[data-role="omp.composer.stop"]');
@@ -376,6 +415,45 @@ try {
   await waitFor(() => text('[data-role="omp.error"]').includes('Codex disconnected'), 'disconnect error');
   assert.equal(tree('[aria-label="Send message"]').length, 0);
   pass('backend failure is visible and disables sending');
+  type('Draft after disconnect');
+  ctl('shot reconnect-draft-kept');
+  click('[data-role="ct.reconnect"] button');
+  await waitFor(() => tree('[data-role="ct.reconnect"]').length === 0 && text('.sf-dock').includes('QA Model'), 'reconnect with restored history');
+  assert.ok(text('.sf-ed-text').includes('Draft after disconnect'));
+  assert.ok(text('[data-role="omp.user"]').includes('disconnect'));
+  pass('reconnect restores backend history and keeps the unsent draft');
+
+  key('super+a'); key('backspace'); await send('QA_CRASH_DELIVERY');
+  await waitFor(() => text('.sf-dock').includes('Message delivery unconfirmed') && tree('[data-role="ct.reconnect"]').length === 1, 'lost acknowledgement');
+  type('New draft after uncertain delivery');
+  click('[data-role="ct.reconnect"] button');
+  await waitFor(() => tree('[data-role="ct.reconnect"]').length === 0 && text('[data-role="omp.user"]').includes('QA_CRASH_DELIVERY'), 'check delivery after reconnect');
+  assert.equal(tree('[data-role="omp.user"]').filter(n => n.text?.includes('QA_CRASH_DELIVERY')).length, 1);
+  assert.ok(text('.sf-ed-text').includes('New draft after uncertain delivery'));
+  assert.ok(text('.sf-dock').includes('Message delivery unconfirmed'));
+  click('[aria-label="Already received"]');
+  pass('a backend crash before acknowledgement retains one message for review without replay');
+
+  key('super+a'); key('backspace'); await send('hold');
+  await waitFor(() => text('.ct-activity').includes('Working'), 'task before recovery test');
+  if (text('[data-role="ct.composer.mode"]') !== 'Queue') {
+    click('[data-role="ct.composer.mode"]'); type('Queue'); key('enter');
+  }
+  await send('This queued message must wait');
+  await waitFor(() => text('[data-role="omp.queue"]').includes('This queued message must wait'), 'queue before shutdown');
+  click('[data-role="omp.composer.stop"]');
+  await waitFor(() => text('[data-role="omp.queue"]').includes('paused'), 'paused queue before restart');
+  type('恢复后的草稿'); key('shift+enter'); type('Second line');
+  await attachImage(portrait);
+  key('ctrl+q'); await pause(300); ctl('ready'); ctl(`run ${JSON.stringify(command)}`);
+  await waitFor(() => text('.sf-ed-text').includes('恢复后的草稿') && text('.sf-dock').includes('QA Model'), 'saved draft after process restart');
+  await waitFor(() => tree('[data-role="omp.composer.chips"] .sf-image').length === 1, 'restored image preview');
+  assert.ok(text('[data-role="omp.queue"]').includes('paused'));
+  assert.ok(text('[data-role="omp.queue"]').includes('This queued message must wait'));
+  assert.equal(tree('[data-role="ct.completion"]').length, 0, 'old completed history creates no new reminder');
+  ctl('shot recovered-draft-and-queue');
+  pass('restarting restores the selected session, multiline draft, image and paused queue');
+  await assertNoTernErrors();
 } catch (error) {
   try {
     ctl('shot failed');

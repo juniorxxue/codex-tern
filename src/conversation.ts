@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import { stat } from 'node:fs/promises';
 import { CodexRpc, RpcOutcomeUnknown } from './rpc';
 import { LatestRead } from './latest-read';
 import type { RpcId, RpcMessage } from './protocol';
@@ -28,6 +29,8 @@ export class Conversation extends EventEmitter {
   requests: PendingRequest[] = [];
   queue: QueuedInput[] = [];
   unconfirmed: QueuedInput[] = [];
+  inflight?: QueuedInput;
+  checkpoint?: () => Promise<void>;
   queuePaused = false;
   threads: Thread[] = [];
   threadsCursor: string | null = null;
@@ -45,6 +48,7 @@ export class Conversation extends EventEmitter {
   readonly turns = new Map<string, Turn>();
   private noticeSeq = 0;
   private draining = false;
+  private completion?: Turn;
   private readonly threadReads = new LatestRead();
   private threadScope?: string;
   private historyRead?: Promise<void>;
@@ -58,7 +62,17 @@ export class Conversation extends EventEmitter {
   get busy() { return this.activeTurn !== null || this.operation !== ''; }
   get model() { return this.modelOverride ?? this.effective?.model ?? 'Codex default'; }
   get effort() { return this.effortOverride ?? this.effective?.reasoningEffort ?? 'default'; }
-  changed() { this.emit('change'); }
+  changed() {
+    this.emit('change');
+    if (this.completion && !this.busy && !this.draining) {
+      const turn = this.completion; this.completion = undefined;
+      if (turn.status !== 'completed' || !this.queue.length || this.queuePaused) this.emit('completed', turn);
+    }
+  }
+  resetHistory() {
+    this.items = []; this.turns.clear(); this.endedTurns.clear(); this.partialItems.clear(); this.itemVersions.clear();
+    this.historyCursor = null; this.activeTurn = null; this.diff = ''; this.plan = []; this.completion = undefined;
+  }
   private activity(at = Date.now() / 1000) {
     if (this.thread) this.thread.recencyAt = Math.max(this.thread.recencyAt ?? 0, at);
     this.emit('activity');
@@ -73,6 +87,10 @@ export class Conversation extends EventEmitter {
 
   async connect() {
     await this.rpc.start();
+    await this.readAccountAndModels();
+  }
+
+  async readAccountAndModels() {
     const results = await Promise.allSettled([
       this.rpc.request('account/read', { refreshToken: false }),
       this.rpc.request('model/list', {}),
@@ -178,13 +196,22 @@ export class Conversation extends EventEmitter {
     this.historyCursor = page.nextCursor; this.changed();
   }
 
-  async submit(text: string, images: string[] = [], mode: 'steer' | 'queue' = 'steer') {
+  async submit(text: string, images: string[] = [], mode: 'steer' | 'queue' = 'steer', queuedId?: string) {
     if (!text.trim() && !images.length) return;
     if (!this.thread || this.connection !== 'ready') throw new Error('The session is not ready yet');
     if (this.unconfirmed.length) throw new Error('Check the unconfirmed message before sending again.');
     if (this.operation) throw new Error('Wait for the current operation to finish');
     if (mode === 'queue' && this.activeTurn) {
-      this.queue.push({ id: randomUUID(), text, images: [...images] }); this.changed(); return;
+      const queued = { id: randomUUID(), text, images: [...images] };
+      this.operation = 'Queuing…'; this.queue.push(queued); this.changed();
+      try { if (this.checkpoint) await this.checkpoint(); }
+      catch (error) { this.queue = this.queue.filter(q => q.id !== queued.id); this.queuePaused = true; this.changed(); throw error; }
+      finally {
+        this.operation = ''; this.changed();
+        if (!this.activeTurn && this.queue.length && !this.queuePaused)
+          setTimeout(() => void this.act(() => this.runQueue()), 0);
+      }
+      return;
     }
     const input: UserInput[] = [
       ...(text ? [{ type: 'text' as const, text, text_elements: [] }] : []),
@@ -192,8 +219,15 @@ export class Conversation extends EventEmitter {
     ];
     const threadId = this.thread.id;
     const turnId = this.activeTurn;
+    const outgoing = { id: queuedId ?? randomUUID(), text, images: [...images] };
     this.operation = turnId ? 'Steering…' : 'Sending…'; this.changed();
     try {
+      this.inflight = outgoing; this.changed();
+      if (this.checkpoint) for (const path of images) {
+        if (!(await stat(path).catch(() => null))?.isFile()) throw new Error(`Image unavailable: ${path}. Remove or reattach it before sending.`);
+      }
+      if (this.checkpoint) await this.checkpoint();
+      if (this.connection !== 'ready') throw new Error('Codex disconnected before this message was sent.');
       if (turnId) {
         await this.rpc.request('turn/steer', { threadId, expectedTurnId: turnId, input });
       } else {
@@ -204,14 +238,16 @@ export class Conversation extends EventEmitter {
         if (!this.endedTurns.has(result.turn.id)) this.turns.set(result.turn.id, result.turn);
         if (!this.endedTurns.has(result.turn.id)) this.activeTurn = result.turn.id;
       }
+      if (queuedId) this.queue = this.queue.filter(q => q.id !== queuedId);
       // A new conversation belongs in history only after its first accepted input.
       if (this.thread && !this.thread.preview?.trim()) this.thread.preview = text.trim() || (images.length ? 'Image' : '');
       this.activity();
     } catch (e) {
       this.queuePaused = true;
-      if (e instanceof RpcOutcomeUnknown) this.unconfirmed.push({ id: randomUUID(), text, images: [...images] });
+      if (e instanceof RpcOutcomeUnknown) this.unconfirmed.push(outgoing);
       throw e;
     } finally {
+      this.inflight = undefined;
       this.operation = ''; this.changed();
       if (!this.draining && !this.activeTurn && this.queue.length && !this.queuePaused)
         setTimeout(() => void this.act(() => this.runQueue()), 0);
@@ -231,7 +267,7 @@ export class Conversation extends EventEmitter {
     const next = this.queue[0];
     this.draining = true;
     try {
-      await this.submit(next.text, next.images);
+      await this.submit(next.text, next.images, 'steer', next.id);
       this.queue = this.queue.filter(q => q.id !== next.id); this.changed();
     } catch (error) {
       // submit retained this input separately. It must no longer be runnable.
@@ -239,6 +275,7 @@ export class Conversation extends EventEmitter {
       throw error;
     } finally {
       this.draining = false;
+      this.changed();
       if (!this.activeTurn && this.queue.length && !this.queuePaused)
         setTimeout(() => void this.act(() => this.runQueue()), 0);
     }
@@ -306,6 +343,7 @@ export class Conversation extends EventEmitter {
         if (!this.endedTurns.has(p.turn.id)) { this.activeTurn = p.turn.id; this.turns.set(p.turn.id, p.turn); }
         break;
       case 'turn/completed': {
+        const firstCompletion = !this.endedTurns.has(p.turn.id);
         this.activity(p.turn.completedAt ?? Date.now() / 1000);
         this.turns.set(p.turn.id, p.turn);
         this.endedTurns.add(p.turn.id);
@@ -315,6 +353,7 @@ export class Conversation extends EventEmitter {
         this.requests = this.requests.filter(r => r.params.turnId !== p.turn.id);
         if (p.turn.error) this.notice(p.turn.error.message, true);
         if (p.turn.status !== 'completed') this.queuePaused = true;
+        if (firstCompletion) this.completion = p.turn;
         if (this.queue.length && !this.queuePaused)
           setTimeout(() => void this.act(() => this.runQueue()), 0);
         break;

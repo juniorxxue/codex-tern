@@ -20,6 +20,8 @@
     "test:ui": "bun scripts/ui-qa.mjs",
     "test:proposals": "bun scripts/proposals-qa.mjs",
     "test:sessions": "bun scripts/sessions-qa.mjs",
+    "test:session-actions": "bun scripts/session-actions-qa.mjs",
+    "test:sidebar-width": "bun scripts/sidebar-width-qa.mjs",
     "check": "bun --bun tsc --noEmit",
     "smoke": "bun scripts/smoke.ts"
   },

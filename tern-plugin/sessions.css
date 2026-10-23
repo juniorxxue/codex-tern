@@ -1,7 +1,7 @@
 [data-role="codex-tern.sessions"] {
   padding: 14px 8px;
   gap: 2px;
-  font-family: "Nunito", "GenSenRounded2 TC", "GenSenRounded2 TC R", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
+  font-family: "Concourse T3", "LXGW Neo XiHei", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
   font-size: 14px;
   line-height: 22px;
 }
@@ -34,10 +34,8 @@
 [data-role="codex-tern.sessions.waiting"],
 [data-role="codex-tern.sessions.running"] { width: 13px; height: 13px; flex-shrink: 0; color: var(--t3); }
 [data-role="codex-tern.sessions.title"] { font-size: 14px; line-height: 22px; }
-[data-role="codex-tern.sessions.delete"] { width: 14px; height: 14px; flex-shrink: 0; color: var(--t3); opacity: 0; cursor: pointer; }
-[data-role="codex-tern.sessions.item"]:hover [data-role="codex-tern.sessions.delete"],
-[data-role="codex-tern.sessions.item"]:focus-within [data-role="codex-tern.sessions.delete"],
-[data-role="codex-tern.sessions.item"][data-mark="pick"] [data-role="codex-tern.sessions.delete"] { opacity: 1; }
-[data-role="codex-tern.sessions.delete"]:hover { color: var(--bad); }
-[data-role="codex-tern.sessions.delete"][data-mark="disabled"] { cursor: default; color: var(--t3); }
+[data-role="codex-tern.sessions.completed"],
+[data-role="codex-tern.sessions.failed"] { width: 13px; height: 13px; flex-shrink: 0; }
+[data-role="codex-tern.sessions.completed"] { color: var(--accent); }
+[data-role="codex-tern.sessions.failed"] { color: var(--bad); }
 [data-role="codex-tern.sessions.note"] { padding: 8px; font-size: 12px; }

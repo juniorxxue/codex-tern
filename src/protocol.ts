@@ -9,6 +9,8 @@ import type { ThreadReadResponse } from './generated/v2/ThreadReadResponse';
 import type { ThreadListResponse } from './generated/v2/ThreadListResponse';
 import type { ThreadTurnsListResponse } from './generated/v2/ThreadTurnsListResponse';
 import type { ThreadArchiveResponse } from './generated/v2/ThreadArchiveResponse';
+import type { ThreadForkResponse } from './generated/v2/ThreadForkResponse';
+import type { ThreadSetNameResponse } from './generated/v2/ThreadSetNameResponse';
 import type { TurnStartResponse } from './generated/v2/TurnStartResponse';
 import type { TurnSteerResponse } from './generated/v2/TurnSteerResponse';
 import type { TurnInterruptResponse } from './generated/v2/TurnInterruptResponse';
@@ -25,6 +27,8 @@ interface Responses {
   'thread/list': ThreadListResponse;
   'thread/turns/list': ThreadTurnsListResponse;
   'thread/archive': ThreadArchiveResponse;
+  'thread/fork': ThreadForkResponse;
+  'thread/name/set': ThreadSetNameResponse;
   'turn/start': TurnStartResponse;
   'turn/steer': TurnSteerResponse;
   'turn/interrupt': TurnInterruptResponse;
@@ -93,6 +97,8 @@ export function parseRpcMessage(value: unknown): RpcMessage {
         throw new Error('Invalid summary index');
       if (value.method === 'serverRequest/resolved' && !rpcId(p.requestId)) throw new Error('Invalid resolved request');
       if (value.method === 'thread/started' && (!record(p.thread) || typeof p.thread.id !== 'string')) throw new Error('Invalid thread');
+      if (value.method === 'thread/name/updated' && (typeof p.threadId !== 'string'
+        || (p.threadName !== null && typeof p.threadName !== 'string'))) throw new Error('Invalid thread name');
       if (value.method === 'turn/plan/updated' && (!Array.isArray(p.plan)
         || !p.plan.every(s => record(s) && typeof s.step === 'string' && typeof s.status === 'string'))) throw new Error('Invalid plan');
       if (value.method === 'item/tool/requestUserInput' && (!Array.isArray(p.questions)
@@ -111,9 +117,9 @@ export function parseRpcMessage(value: unknown): RpcMessage {
 /** Check the container shapes used by this client; generated types describe their contents. */
 export function validateResult(method: Method, value: unknown): void {
   if (!record(value)) throw new Error(`Invalid ${method} response`);
-  if (['thread/start', 'thread/resume', 'thread/read'].includes(method)
+  if (['thread/start', 'thread/resume', 'thread/fork', 'thread/read'].includes(method)
     && (!record(value.thread) || typeof value.thread.id !== 'string')) throw new Error(`Invalid ${method} thread`);
-  if (['thread/start', 'thread/resume'].includes(method) && typeof value.cwd !== 'string') throw new Error(`Invalid ${method} workspace`);
+  if (['thread/start', 'thread/resume', 'thread/fork'].includes(method) && typeof value.cwd !== 'string') throw new Error(`Invalid ${method} workspace`);
   if (method === 'turn/start' && (!record(value.turn) || typeof value.turn.id !== 'string')) throw new Error('Invalid turn/start turn');
   if (['model/list', 'thread/list', 'thread/turns/list'].includes(method) && !Array.isArray(value.data))
     throw new Error(`Invalid ${method} page`);

@@ -5,6 +5,7 @@ import { HELP, VERSION, nativeArgs, parseOptions } from './options';
 import { findExecutable, openTern, focusClient } from './launch';
 import { CodexRpc } from './rpc';
 import { Controller } from './controller';
+import { RecoveryStore, recoveryPath } from './recovery';
 import type { ProjectInstance, ProjectCommand } from './project-instance';
 
 async function main() {
@@ -34,7 +35,11 @@ async function main() {
   let shuttingDown = false;
   const close = async () => {
     if (shuttingDown) return;
-    shuttingDown = true; await instance?.close(); await rpc.close();
+    shuttingDown = true; c.connection = 'disconnected';
+    // Keep the project lease until the final journal is saved. A new client
+    // must not read an older snapshot while this backend is still closing.
+    try { await rpc.close(); await c.flushRecovery(); }
+    finally { await instance?.close(); }
   };
   try {
     const ui = options.plain ? null : await (await import('./ui')).createNativeUI(c);
@@ -70,12 +75,17 @@ async function main() {
         if (request.prompt !== undefined) await c.submit(request.prompt);
       });
       if (!instance) { await ui.close(); return; }
+      try { c.useRecovery(await RecoveryStore.open(recoveryPath(address))); }
+      catch (error) { c.notice((error as Error).message, true); }
     }
     // Never await backend work in the UI input loop: approvals and cancellation stay live.
-    const connection = c.connect(options.resume).then(async () => {
+    const connection = c.connect(options.resume, options.prompt !== undefined).then(async () => {
       if (ui) await ui.openSidebar();
       if (options.prompt !== undefined) await c.submit(options.prompt);
-    }).catch(e => { c.notice(e.message, true); if (!c.thread) c.connection = 'disconnected'; c.changed(); }).finally(ready);
+    }).catch(async e => {
+      c.notice(e.message, true); c.connection = rpc.connected ? 'ready' : 'disconnected'; c.changed();
+      if (ui && rpc.connected) await ui.openSidebar();
+    }).finally(ready);
     if (ui) {
       await ui.run();
     } else {
@@ -107,7 +117,8 @@ async function main() {
         if (line === '/quit') break;
         // Commands are UI actions. Unknown slash input is sent verbatim to Codex.
         await c.act(async () => {
-          if (line === '/help') console.log('/new · /threads · /resume ID · /stop · /queue TEXT · /next · /reply ID JSON · /unconfirmed · /sent ID · /retry ID · /quit');
+          if (line === '/help') console.log('/new · /threads · /resume ID · /reconnect · /stop · /queue TEXT · /next · /reply ID JSON · /unconfirmed · /sent ID · /retry ID · /quit');
+          else if (line === '/reconnect') await c.reconnect();
           else if (line === '/new') await c.newThread();
           else if (line === '/threads') { await c.listThreads(); console.log(c.threads.map(t => `${t.id}  ${t.name || t.preview}`).join('\n')); }
           else if (line.startsWith('/resume ')) await c.resume(line.slice(8).trim());

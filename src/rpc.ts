@@ -29,27 +29,31 @@ export class CodexRpc extends EventEmitter {
 
   async start() {
     if (this.child) throw new Error('Codex is already started');
-    this.child = spawn(this.options.binary ?? process.env.CODEX_BINARY ?? 'codex',
+    this.closing = false; this.stderrTail = '';
+    const child = this.child = spawn(this.options.binary ?? process.env.CODEX_BINARY ?? 'codex',
       ['app-server', ...(this.options.args ?? [])], {
         cwd: this.options.cwd, env: { ...process.env }, stdio: ['pipe', 'pipe', 'pipe'],
       });
     const lines = createInterface({ input: this.child.stdout });
     lines.on('line', line => {
+      if (this.child !== child) return;
       let message: RpcMessage;
       try { message = parseRpcMessage(JSON.parse(line)); }
       catch { this.emit('diagnostic', 'Invalid message from app-server was ignored'); return; }
       this.receive(message);
     });
     this.child.stderr.on('data', chunk => {
+      if (this.child !== child) return;
       this.stderrTail = (this.stderrTail + chunk.toString()).slice(-6000);
       this.emit('diagnostic', chunk.toString());
     });
-    this.child.stdin.on('error', e => this.fail(e));
-    this.child.on('error', e => this.fail(e));
+    this.child.stdin.on('error', e => { if (this.child === child) this.fail(e); });
+    this.child.on('error', e => { if (this.child === child) this.fail(e); });
     this.child.on('exit', (code, signal) => {
+      lines.close();
+      if (this.child !== child) return;
       this.connected = false;
       this.owned.clear();
-      lines.close();
       this.fail(new Error(`Codex app-server exited (${signal ?? code}). ${this.stderrTail.slice(-1500)}`));
       if (!this.closing) this.emit('disconnected', `Codex disconnected (${signal ?? code}). The task may have been accepted. Resume the session to check; input will not be resent automatically.`);
     });
@@ -61,6 +65,12 @@ export class CodexRpc extends EventEmitter {
     this.codexHome = result.codexHome;
     this.connected = true;
     return result;
+  }
+
+  async restart() {
+    await this.close();
+    this.child = undefined;
+    return this.start();
   }
 
   private receive(message: RpcMessage) {
@@ -123,11 +133,12 @@ export class CodexRpc extends EventEmitter {
     this.owned.clear();
     this.fail(new Error('Client closed'));
     const child = this.child;
-    if (!child || child.exitCode !== null || child.signalCode !== null) return;
-    child.stdin.end();
+    if (!child || !child.pid || child.exitCode !== null || child.signalCode !== null) return;
     await new Promise<void>(resolve => {
-      const timer = setTimeout(() => { child.kill('SIGTERM'); resolve(); }, 1500);
-      child.once('exit', () => { clearTimeout(timer); resolve(); });
+      const terminate = setTimeout(() => child.kill('SIGTERM'), 1500);
+      const kill = setTimeout(() => child.kill('SIGKILL'), 3000);
+      child.once('exit', () => { clearTimeout(terminate); clearTimeout(kill); resolve(); });
+      child.stdin.end();
     });
   }
 }

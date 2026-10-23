@@ -3,14 +3,16 @@ import { spawn, execFileSync } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import assert from 'node:assert/strict';
+import { prepareTernQaConfig } from './qa-tern-config.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const out = resolve(root, '.prototype/proposals-qa');
+const config = resolve(out, `config-${process.pid}`);
 const socket = `/tmp/codex-tern-proposals-${process.pid}.sock`;
 const codexHome = resolve(out, `codex-${process.pid}`);
-await mkdir(resolve(out, 'config'), { recursive: true });
+await prepareTernQaConfig(config);
 await mkdir(codexHome, { recursive: true });
-const env = { ...process.env, TERN_CONFIG_DIR: resolve(out, 'config'), XDG_CACHE_HOME: resolve(out, 'cache'), QA_PROPOSAL_FIXTURES: '1' };
+const env = { ...process.env, TERN_CONFIG_DIR: config, XDG_CACHE_HOME: resolve(out, 'cache'), XDG_STATE_HOME: resolve(out, `state-${process.pid}`), QA_PROPOSAL_FIXTURES: '1' };
 const server = spawn('tern', ['serve', '--control', socket, '--out', out, '--cwd', root], { env, stdio: 'ignore' });
 const pause = ms => new Promise(r => setTimeout(r, ms));
 const results = [];

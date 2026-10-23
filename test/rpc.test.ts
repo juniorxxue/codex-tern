@@ -72,3 +72,12 @@ test('closing rejects pending calls and cleans up the child process', async t =>
   const pending = assert.rejects(rpc.request('thread/read', { threadId: 'pending' }), /Client closed/);
   await rpc.close(); await pending; assert.equal(rpc.connected, false);
 });
+
+test('restarting after an exit starts one fresh connection and accepts new requests', async t => {
+  const rpc = await fixture(t); await rpc.start(); const first = rpc.pid;
+  await assert.rejects(rpc.request('thread/start', {}), RpcOutcomeUnknown);
+  await rpc.restart();
+  assert.notEqual(rpc.pid, first); assert.equal(rpc.connected, true);
+  const result = await rpc.request('account/read', { refreshToken: false });
+  assert.equal(result.account?.type, 'test');
+});

@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { FileLock } from '@oh-my-pi/pi-natives';
 import { join } from 'node:path';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { proposalReply } from './proposals.mjs';
 const send = m => process.stdout.write(JSON.stringify(m) + '\n');
 const notify = (method, params) => send({ method, params });
@@ -27,6 +28,19 @@ if (process.env.QA_SESSION_FIXTURES) {
     preview: '', updatedAt: 1792558800, turns: [] });
 }
 let seq = 0;
+const historyFile = process.env.QA_HISTORY_FILE;
+if (historyFile && existsSync(historyFile)) {
+  const history = JSON.parse(readFileSync(historyFile, 'utf8'));
+  seq = history.seq;
+  threads.clear();
+  for (const thread of history.threads) {
+    for (const turn of thread.turns) if (turn.status === 'inProgress') turn.status = 'interrupted';
+    threads.set(thread.id, thread);
+  }
+}
+function persist() {
+  if (historyFile) writeFileSync(historyFile, JSON.stringify({ seq, threads: [...threads.values()] }));
+}
 const contexts = new Map(), pending = new Map();
 const local = new AsyncLocalStorage();
 const owned = new Map();
@@ -49,6 +63,7 @@ function add(item, done = true) {
   const { turn } = local.getStore();
   const existing = turn.items.findIndex(i => i.id === item.id);
   if (existing < 0) turn.items.push(item); else turn.items[existing] = item;
+  persist();
   event(done ? 'item/completed' : 'item/started', { item });
 }
 function finish(text, status = 'completed') {
@@ -59,6 +74,7 @@ function finish(text, status = 'completed') {
   if (text) add({ id: `answer-${turn.id}`, type: 'agentMessage', phase: 'final_answer', text });
   turn.status = status; turn.completedAt = Date.now() / 1000; turn.durationMs = Math.round((turn.completedAt - turn.startedAt) * 1000);
   current.recencyAt = current.updatedAt = turn.completedAt;
+  persist();
   event('turn/completed', { turn });
 }
 createInterface({ input: process.stdin }).on('line', line => {
@@ -86,8 +102,31 @@ createInterface({ input: process.stdin }).on('line', line => {
         createdAt: Date.now() / 1000, updatedAt: Date.now() / 1000, recencyAt: Date.now() / 1000, turns: [] };
       context.current = current; contexts.set(current.id, context);
       acquire(current.id);
-      threads.set(current.id, current); reply(settings(current));
+      threads.set(current.id, current); persist(); reply(settings(current));
       notify('warning', { message: 'QA configuration notice' }); break;
+    }
+    case 'thread/fork': {
+      const source = threads.get(m.params.threadId);
+      const at = source?.turns.findIndex(t => t.id === m.params.lastTurnId) ?? -1;
+      if (!source || at < 0 || source.turns[at].status !== 'completed') {
+        send({ id: m.id, error: { code: -32000, message: 'Choose a completed turn' } }); break;
+      }
+      const fork = { ...structuredClone(source), id: `qa-thread-${++seq}`, forkedFromId: source.id,
+        name: `Fork of ${source.name || source.preview}`, cwd: m.params.cwd ?? source.cwd,
+        createdAt: Date.now() / 1000, updatedAt: Date.now() / 1000, recencyAt: Date.now() / 1000,
+        turns: structuredClone(source.turns.slice(0, at + 1)) };
+      // Forking must not replace the source's live AsyncLocalStorage context.
+      threads.set(fork.id, fork); contexts.set(fork.id, { current: fork }); acquire(fork.id); persist();
+      notify('thread/started', { thread: { ...fork, turns: [] } });
+      reply(settings({ ...fork, turns: m.params.excludeTurns ? [] : fork.turns })); break;
+    }
+    case 'thread/name/set': {
+      const target = threads.get(m.params.threadId);
+      if (!target || target.archived || m.params.name === 'QA_RENAME_REJECT') {
+        send({ id: m.id, error: { code: -32000, message: 'QA_RENAME_UNAVAILABLE' } }); break;
+      }
+      target.name = m.params.name; persist(); reply({});
+      notify('thread/name/updated', { threadId: target.id, threadName: target.name }); break;
     }
     case 'thread/list': {
       const activity = t => m.params.sortKey === 'recency_at' ? t.recencyAt ?? t.updatedAt : t.updatedAt;
@@ -102,6 +141,7 @@ createInterface({ input: process.stdin }).on('line', line => {
         send({ id: m.id, error: { code: -32000, message: 'Session unavailable or still running' } }); break;
       }
       target.archived = true;
+      persist();
       owned.get(target.id)?.release(); owned.delete(target.id);
       reply({}); notify('thread/archived', { threadId: target.id }); break;
     }
@@ -113,6 +153,7 @@ createInterface({ input: process.stdin }).on('line', line => {
         send({ id: m.id, error: { code: -32600, message: `thread ${m.params.threadId} already has an active writer` } }); break;
       }
       current = threads.get(m.params.threadId);
+      if (!current) { send({ id: m.id, error: { code: -32000, message: 'Session not found' } }); break; }
       context.current = current; contexts.set(current.id, context);
       // Opening history changes update metadata, but not conversation activity.
       if (process.env.QA_SESSION_FIXTURES) current.updatedAt = Date.now() / 1000;
@@ -132,6 +173,10 @@ createInterface({ input: process.stdin }).on('line', line => {
       turn = { id: `qa-turn-${++seq}`, items: [], status: 'inProgress', startedAt: Date.now() / 1000, durationMs: null };
       context.turn = turn;
       current.turns.push(turn);
+      if (text.includes('QA_CRASH_DELIVERY')) {
+        turn.items.push({ id: `user-${turn.id}`, type: 'userMessage', content: m.params.input });
+        persist(); process.exit(9);
+      }
       reply(text.includes('QA_UNCONFIRMED') ? { turn: null } : { turn });
       event('turn/started', { turn });
       add({ id: `user-${turn.id}`, type: 'userMessage', content: m.params.input });

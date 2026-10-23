@@ -176,7 +176,7 @@ test('failed history hydration retains requests for a retry of the same session'
     return { data: [], nextCursor: null };
   };
   await assert.rejects(c.resume('saved'), /History unavailable/);
-  assert.deepEqual(c.sessionStatus('saved'), { running: false, waiting: true });
+  assert.deepEqual(c.sessionStatus('saved'), { running: false, waiting: true, completed: false, failed: false });
   fail = false; await c.resume('saved');
   assert.equal(c.requests.filter(r => r.id === 88).length, 1);
 });
@@ -283,7 +283,7 @@ test('deleting the selected session returns to an existing conversation and keep
   await c.archiveThread('idle', 'thread-1');
   assert.equal(c.isArchived('idle'), true);
   assert.equal(c.thread?.id, 'thread-1');
-  assert.deepEqual(c.sessionStatus('thread-1'), { running: true, waiting: false });
+  assert.deepEqual(c.sessionStatus('thread-1'), { running: true, waiting: false, completed: false, failed: false });
   assert.deepEqual(t.calls.map(x => x.method), ['thread/start', 'thread/archive']);
 });
 
@@ -335,12 +335,12 @@ test('resuming an idle session never reports task execution; real background tur
     : { data: [], nextCursor: null };
   const pending = c.resume('idle');
   assert.equal(c.selecting, true);
-  assert.deepEqual(c.sessionStatus('idle'), { running: false, waiting: false });
-  assert.deepEqual(c.sessionStatus('thread-1'), { running: true, waiting: false });
+  assert.deepEqual(c.sessionStatus('idle'), { running: false, waiting: false, completed: false, failed: false });
+  assert.deepEqual(c.sessionStatus('thread-1'), { running: true, waiting: false, completed: false, failed: false });
   resumed({ thread: { id: 'idle' }, cwd: process.cwd() }); await pending;
   assert.equal(c.thread?.id, 'idle');
-  assert.deepEqual(c.sessionStatus('idle'), { running: false, waiting: false });
-  assert.deepEqual(c.sessionStatus('thread-1'), { running: true, waiting: false });
+  assert.deepEqual(c.sessionStatus('idle'), { running: false, waiting: false, completed: false, failed: false });
+  assert.deepEqual(c.sessionStatus('thread-1'), { running: true, waiting: false, completed: false, failed: false });
 });
 test('items keep identity across streaming, completion and other-thread events', () => {
   const { c, t } = setup();
@@ -364,7 +364,7 @@ test('two sessions keep independent running turns, history, model choices and ap
   t.emit('notification', { method: 'item/agentMessage/delta', params: { threadId: 'thread-1', turnId: 'turn-thread-1', itemId: 'a', delta: 'background result' } });
   t.emit('request', { id: 77, method: 'item/commandExecution/requestApproval', params: { threadId: 'thread-1', turnId: 'turn-thread-1' } });
   assert.equal(c.activeTurn, 'turn-thread-2'); assert.equal(c.requests.length, 0); assert.equal(c.items.length, 0);
-  assert.deepEqual(c.sessionStatus('thread-1'), { running: true, waiting: true });
+  assert.deepEqual(c.sessionStatus('thread-1'), { running: true, waiting: true, completed: false, failed: false });
   const calls = t.calls.length;
   await c.resume('thread-1');
   assert.equal(t.calls.length, calls, 'a loaded session is selected without another resume or history request');

@@ -11,6 +11,8 @@ export interface FolderSession {
   locked: boolean;
   running: boolean;
   waiting: boolean;
+  completed: boolean;
+  failed: boolean;
   canArchive: boolean;
 }
 
@@ -53,7 +55,7 @@ export class FolderSessions {
   private mergeLocal() {
     this.threads = this.threads.map(thread => {
       const local = this.c.sessionThread(thread.id);
-      return local ? { ...thread, ...(local.name ? { name: local.name } : {}),
+      return local ? { ...thread, ...(local.name !== undefined ? { name: local.name } : {}),
         ...(local.preview ? { preview: local.preview } : {}),
         recencyAt: Math.max(activityAt(thread), activityAt(local)) } : thread;
     });
@@ -100,6 +102,7 @@ export class FolderSessions {
   }
 
   contains(id: string) { return this.threads.some(t => t.id === id); }
+  get(id: string) { return this.threads.find(t => t.id === id); }
   isLocked(id: string) {
     // Ownership may change after an asynchronous probe or a previous conflict.
     // Loaded background conversations must stay selectable, just like this one.

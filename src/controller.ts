@@ -2,12 +2,15 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { CodexRpc } from './rpc';
+import { CodexRpc, RpcError } from './rpc';
 import { Conversation } from './conversation';
 import type { RpcId, RpcMessage } from './protocol';
 import type { Thread } from './generated/v2/Thread';
 import type { ReasoningEffort } from './generated/ReasoningEffort';
+import type { Turn } from './generated/v2/Turn';
+import { RecoveryStore, type SavedDraft } from './recovery';
 export type { DisplayItem, PendingRequest, QueuedInput, Notice } from './conversation';
+export interface Completion { threadId: string; turnId: string; title: string; status: 'completed' | 'failed' }
 
 /** One project runtime; changing the selected conversation never stops its work. */
 export class Controller extends EventEmitter {
@@ -17,6 +20,11 @@ export class Controller extends EventEmitter {
   private navigation = '';
   private globalDiagnostics: string[] = [];
   sessionsVersion = 0;
+  private recovery?: RecoveryStore;
+  private recoveryError = '';
+  private reconnecting?: Promise<void>;
+  private readonly unread = new Map<string, Completion>();
+  notifications = true;
 
   constructor(readonly rpc: CodexRpc, cwd: string) {
     super();
@@ -31,6 +39,7 @@ export class Controller extends EventEmitter {
       const target = id ? this.conversation(id) : this.selected;
       if (target && message.method === 'thread/closed') target.hydrated = false;
       target?.onNotification(message);
+      if (id && message.method === 'thread/name/updated') this.updateThreadName(id, message.params.threadName);
     });
     rpc.on('request', (message: RpcMessage) => {
       const id = message.params?.threadId;
@@ -43,6 +52,7 @@ export class Controller extends EventEmitter {
     rpc.on('disconnected', (text: string) => {
       for (const conversation of this.all()) {
         conversation.connection = 'disconnected'; conversation.activeTurn = null;
+        conversation.hydrated = false;
         conversation.requests = []; conversation.queuePaused = true; conversation.notice(text, true);
       }
     });
@@ -59,10 +69,32 @@ export class Controller extends EventEmitter {
     this.conversations.set(id, next);
     return next;
   }
-  private async prepareSession(id: string) {
+  private emptyRecoverySession(id: string) {
+    const saved = this.recovery?.session(id), conversation = this.find(id);
+    return !!saved && !saved.name?.trim() && !saved.preview?.trim()
+      && !saved.draft.text && !saved.draft.images.length && !saved.queue.length
+      && !saved.unconfirmed.length && !saved.inflight
+      && !conversation?.items.length && !conversation?.turns.size && !conversation?.activeTurn
+      && !conversation?.requests.length && !conversation?.queue.length
+      && !conversation?.unconfirmed.length && !conversation?.inflight;
+  }
+  private async prepareSession(id: string, recoverEmpty = false) {
     const next = this.conversation(id);
     if (!next.hydrated) {
-      await next.resume(id);
+      try { await next.resume(id); }
+      catch (error) {
+        // A blank local selection can outlive its backend record. Only automatic
+        // recovery may replace it, and only after an explicit missing-rollout reply.
+        if (!recoverEmpty || !this.emptyRecoverySession(id) || !(error instanceof RpcError)
+          || error.message !== `no rollout found for thread id ${id}`) throw error;
+        const replacement = await this.prepareNew(next.cwd);
+        // Typing can continue while creation is pending. Keep any new input
+        // attached to the original selection instead of discarding it.
+        if (!this.emptyRecoverySession(id)) throw error;
+        this.recovery?.remove(id);
+        this.conversations.delete(id);
+        return replacement;
+      }
       next.hydrated = true;
     }
     return next;
@@ -78,13 +110,25 @@ export class Controller extends EventEmitter {
   }
   private create(cwd: string) {
     const conversation = new Conversation(this.rpc, cwd);
+    if (this.recovery) conversation.checkpoint = () => this.flushRecovery();
     if (this.selected) {
       conversation.connection = this.connection;
       conversation.models = this.models; conversation.account = this.account;
     }
     let previous = '';
     conversation.on('activity', () => { this.sessionsVersion++; });
+    conversation.on('completed', (turn: Turn) => {
+      if (!conversation.thread || !['completed', 'failed'].includes(turn.status)) return;
+      // A queue is one stretch of work. Report success when its last turn ends.
+      if (turn.status === 'completed' && conversation.queue.length && !conversation.queuePaused) return;
+      const event: Completion = { threadId: conversation.thread.id, turnId: turn.id,
+        title: conversation.thread.name || conversation.thread.preview || 'Codex', status: turn.status as Completion['status'] };
+      this.unread.set(event.threadId, event);
+      this.emit('completion', event);
+    });
     conversation.on('change', () => {
+      if (conversation.activeTurn && conversation.thread) this.unread.delete(conversation.thread.id);
+      this.saveConversation(conversation);
       const status = JSON.stringify([conversation.thread?.name, conversation.activeTurn, conversation.operation,
         conversation.requests.length, conversation.queue.length, conversation.unconfirmed.length, conversation.endedTurns.size, conversation.thread?.recencyAt]);
       // Background deltas stay in memory; only status changes redraw the rail.
@@ -155,10 +199,12 @@ export class Controller extends EventEmitter {
   set operation(value: string) { this.selected.operation = value; }
   get selecting() { return this.navigation !== ''; }
   get busy() { return this.selecting || this.selected.busy; }
+  get sessionReady() { return this.selected.hydrated && this.connection === 'ready'; }
   get hasWork() { return [...this.all()].some(c => c.busy || c.queue.length || c.requests.length || c.unconfirmed.length); }
   sessionStatus(id: string) {
     const c = this.find(id);
-    return { running: !!c?.activeTurn, waiting: !!(c?.requests.length || c?.unconfirmed.length) };
+    return { running: !!c?.activeTurn, waiting: !!(c?.requests.length || c?.unconfirmed.length),
+      completed: this.unread.get(id)?.status === 'completed', failed: this.unread.get(id)?.status === 'failed' };
   }
   sessionHasContent(id: string) {
     const c = this.find(id);
@@ -171,7 +217,50 @@ export class Controller extends EventEmitter {
     return this.connection === 'ready' && !this.selecting && !this.isArchived(id)
       && !conversation?.busy && !conversation?.requests.length && !conversation?.queue.length && !conversation?.unconfirmed.length;
   }
-  changed() { this.emit('change'); }
+  changed() {
+    if (this.thread?.id) this.recovery?.select(this.thread.id);
+    this.emit('change');
+  }
+  markRead(id: string) { if (this.unread.delete(id)) this.changed(); }
+  setNotifications(enabled: boolean) { this.notifications = enabled; this.recovery?.setNotifications(enabled); this.changed(); }
+
+  useRecovery(store: RecoveryStore) {
+    this.recovery = store; this.notifications = store.notifications;
+    store.onError = error => {
+      if (this.recoveryError === error.message) return;
+      this.recoveryError = error.message;
+      this.notice(`Drafts could not be saved: ${error.message}`, true);
+    };
+    for (const saved of store.sessions) {
+      const conversation = this.conversation(saved.id);
+      conversation.cwd = saved.cwd;
+      conversation.thread = { id: saved.id, cwd: saved.cwd, name: saved.name, preview: saved.preview } as Thread;
+      conversation.queue = structuredClone(saved.queue.filter(q => q.id !== saved.inflight?.id));
+      conversation.unconfirmed = structuredClone([...new Map([...saved.unconfirmed,
+        ...(saved.inflight ? [saved.inflight] : [])].map(q => [q.id, q])).values()]);
+      conversation.queuePaused = true;
+    }
+    for (const conversation of this.all()) conversation.checkpoint = () => this.flushRecovery();
+  }
+  private saveConversation(conversation: Conversation) {
+    const thread = conversation.thread;
+    if (!this.recovery || !thread || this.isArchived(thread.id)) return;
+    this.recovery.update({ id: thread.id, cwd: conversation.cwd, name: thread.name ?? undefined, preview: thread.preview,
+      draft: this.recovery.session(thread.id)?.draft ?? { text: '', images: [] },
+      queue: conversation.queue, unconfirmed: conversation.unconfirmed, inflight: conversation.inflight });
+  }
+  savedDraft(id: string): SavedDraft | undefined { return this.recovery?.session(id)?.draft; }
+  saveDraft(id: string, draft: SavedDraft) {
+    if (!this.recovery || this.isArchived(id)) return;
+    const conversation = this.find(id);
+    if (conversation) this.saveConversation(conversation);
+    const saved = this.recovery.session(id);
+    if (saved) this.recovery.update({ ...saved, draft });
+  }
+  async flushRecovery() {
+    for (const conversation of this.all()) this.saveConversation(conversation);
+    await this.recovery?.flush(); this.recoveryError = '';
+  }
   notice(text: string, error = false) { this.selected.notice(text, error); }
   sessionNotice(id: string | undefined, text: string, error = false) {
     (id ? this.find(id) : this.selected)?.notice(text, error);
@@ -186,11 +275,47 @@ export class Controller extends EventEmitter {
     try { await action(); } catch (error) { this.notice(error instanceof Error ? error.message : String(error), true); }
   }
 
-  async connect(resumeId?: string) {
+  async connect(resumeId?: string, fresh = false) {
     await this.selected.connect();
     this.connection = 'ready';
-    if (resumeId) await this.resume(resumeId); else await this.newThread();
+    for (const conversation of this.all()) {
+      conversation.models = this.selected.models; conversation.account = this.selected.account;
+    }
+    const id = resumeId ?? (fresh ? undefined : this.recovery?.selected);
+    if (id) {
+      if (this.recovery?.session(id)) { this.selected = this.conversation(id); this.changed(); }
+      await this.resume(id, resumeId === undefined);
+    } else await this.newThread();
     this.sessionsVersion++; this.changed();
+  }
+  reconnect(): Promise<void> {
+    if (this.reconnecting) return this.reconnecting;
+    if (this.connection === 'ready' && this.sessionReady) return Promise.resolve();
+    const work = this.reconnectBackend().finally(() => { this.reconnecting = undefined; });
+    this.reconnecting = work; return work;
+  }
+  private async reconnectBackend() {
+    if (this.selecting || [...this.all()].some(c => !!c.operation)) throw new Error('Wait for the current operation to finish.');
+    const recoverEmpty = !!this.thread && this.emptyRecoverySession(this.thread.id);
+    this.navigation = 'Reconnecting…'; this.connection = 'connecting'; this.changed();
+    try {
+      for (const conversation of this.all()) {
+        conversation.hydrated = false; conversation.queuePaused = true; conversation.requests = [];
+        conversation.resetHistory();
+      }
+      await this.rpc.restart();
+      await this.selected.readAccountAndModels();
+      this.connection = 'ready';
+      for (const conversation of this.all()) {
+        conversation.models = this.selected.models; conversation.account = this.selected.account;
+      }
+      if (this.thread) {
+        // Keep local drafts and queues; refresh only the selected thread's backend state.
+        this.selected = await this.prepareSession(this.thread.id, recoverEmpty);
+      } else this.selected = await this.prepareNew(this.cwd);
+      this.sessionsVersion++;
+    } catch (error) { this.connection = this.rpc.connected ? 'ready' : 'disconnected'; throw error; }
+    finally { this.navigation = ''; this.changed(); }
   }
   async newThread(cwd = this.cwd) {
     this.ensureSelection();
@@ -199,14 +324,55 @@ export class Controller extends EventEmitter {
       this.selected = await this.prepareNew(cwd); this.sessionsVersion++;
     } finally { this.navigation = ''; this.changed(); }
   }
-  async resume(id: string) {
+  async resume(id: string, recoverEmpty = false) {
     this.ensureSelection();
     const cached = this.find(id);
     if (cached?.hydrated) { this.selected = cached; this.changed(); return; }
     this.navigation = 'Opening session…'; this.changed();
     try {
-      this.selected = await this.prepareSession(id);
+      this.selected = await this.prepareSession(id, recoverEmpty);
     } finally { this.navigation = ''; this.changed(); }
+  }
+  forkReply(turnId: string) {
+    if (this.turns.get(turnId)?.status !== 'completed') return undefined;
+    return this.items.findLast(entry => entry.turnId === turnId && entry.done
+      && entry.item.type === 'agentMessage' && entry.item.phase !== 'commentary');
+  }
+  async forkThread(threadId: string, turnId: string) {
+    this.ensureSelection();
+    if (this.thread?.id !== threadId || !this.sessionReady || !this.forkReply(turnId))
+      throw new Error('Choose a completed reply in the current session to fork.');
+    const source = this.selected;
+    this.navigation = 'Forking session…'; this.changed();
+    try {
+      const result = await this.rpc.request('thread/fork', {
+        threadId, lastTurnId: turnId, cwd: source.cwd, excludeTurns: true,
+      });
+      const next = this.conversation(result.thread.id);
+      next.adopt(result);
+      next.modelOverride = source.modelOverride; next.effortOverride = source.effortOverride;
+      try { await next.loadHistory(); next.hydrated = true; }
+      finally {
+        // Creation already succeeded. Keep the fork accessible even if reading
+        // its history fails; Retry can reopen it without creating another fork.
+        this.selected = next; this.sessionsVersion++;
+      }
+    } finally { this.navigation = ''; this.changed(); }
+  }
+  private updateThreadName(id: string, name: string | null) {
+    const conversation = this.conversation(id);
+    conversation.thread!.name = name;
+    for (const owner of this.all()) for (const thread of owner.threads) if (thread.id === id) thread.name = name;
+    this.saveConversation(conversation);
+    this.sessionsVersion++; this.changed();
+  }
+  async renameThread(id: string, value: string) {
+    if (this.connection !== 'ready') throw new Error('Codex is not connected yet.');
+    if (this.selecting || this.isArchived(id)) throw new Error('This session is unavailable.');
+    const name = value.trim();
+    if (!name) throw new Error('Enter a session name.');
+    await this.rpc.request('thread/name/set', { threadId: id, name });
+    this.updateThreadName(id, name);
   }
   async archiveThread(id: string, replacementId?: string) {
     this.ensureSelection();
@@ -222,6 +388,7 @@ export class Controller extends EventEmitter {
       const next = current ? await (replacement ? this.prepareSession(replacement) : this.prepareNew(this.cwd)) : undefined;
       await this.rpc.request('thread/archive', { threadId: id });
       this.archived.add(id);
+      this.recovery?.remove(id); this.unread.delete(id);
       this.conversations.delete(id);
       if (next) { next.hydrated = true; this.selected = next; this.remember(next); }
       for (const conversation of this.all()) conversation.threads = conversation.threads.filter(t => t.id !== id);
@@ -231,17 +398,24 @@ export class Controller extends EventEmitter {
   async listThreads(all = false, more = false) {
     const target = this.selected;
     await target.listThreads(all, more);
-    target.threads = target.threads.filter(t => !this.isArchived(t.id));
+    target.threads = target.threads.filter(t => !this.isArchived(t.id)).map(t => {
+      const local = this.sessionThread(t.id);
+      return local?.name !== undefined ? { ...t, name: local.name } : t;
+    });
   }
   loadHistory() { return this.selected.loadHistory(); }
   refreshHistory() { return this.selected.refreshHistory(); }
   resolveUnconfirmed(id: string, retry = false) { this.selected.resolveUnconfirmed(id, retry); }
   submit(text: string, images: string[] = [], mode: 'steer' | 'queue' = 'steer') {
     if (this.selecting) return Promise.reject(new Error('Wait for the session to finish opening'));
+    if (!this.sessionReady) return Promise.reject(new Error('Reconnect and open this session before sending.'));
     return this.selected.submit(text, images, mode);
   }
   stop() { return this.selected.stop(); }
-  runQueue() { return this.selected.runQueue(); }
+  runQueue() {
+    if (!this.sessionReady) return Promise.reject(new Error('Reconnect and open this session before sending.'));
+    return this.selected.runQueue();
+  }
   removeQueued(id: string) { this.selected.removeQueued(id); }
   chooseModel(id: string) { this.selected.chooseModel(id); }
   chooseEffort(effort: ReasoningEffort) { this.selected.chooseEffort(effort); }

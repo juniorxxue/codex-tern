@@ -2,16 +2,17 @@ import { css } from '@stencil-hq/tern';
 
 // Tern confines program sheets to region descendants. The window plugin
 // wraps this same sheet in a surface selector for clients already running.
-// Rounded reading fonts, with open leading for mixed Chinese/English text.
+// Open leading for mixed Chinese/English text, using the installed reading fonts.
 export const appearanceStyles = css`
   .sf {
-    --ct-prose: "Nunito", "GenSenRounded2 TC", "GenSenRounded2 TC R", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif;
+    --ct-prose: "Concourse T3", "LXGW Neo XiHei", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif;
   }
   .sf.sf-card[data-role="omp.user"],
   .sf.sf-col[data-role="omp.assistant"],
   .sf.sf-card[data-role="omp.welcome"],
   .sf.sf-col[data-role="omp.welcome"],
   .sf.sf-row[data-role="ct.pending"],
+  .sf.sf-row[data-role="ct.fork.origin"],
   .sf.sf-el.ct-activity {
     width: 100%;
     max-width: 736px;
@@ -25,6 +26,17 @@ export const appearanceStyles = css`
   }
   .sf.sf-col[data-role="omp.assistant"] > .sf-md,
   .sf.sf-card[data-role="omp.user"] > .sf-md { gap: 16px; }
+  .sf.sf-row[data-role="ct.reply.actions"] { margin-top: 8px; }
+  .ct-reply-action {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--ct-prose); font-size: 12px; line-height: 20px;
+    padding: 3px 6px; border-radius: 6px; color: var(--t3); cursor: pointer;
+  }
+  .ct-reply-action:hover { color: var(--t1); background: var(--raise); }
+  .ct-reply-action:focus-visible { outline: 1px solid var(--accent); }
+  .ct-reply-action[aria-disabled="true"] { opacity: 0.45; cursor: default; }
+  .ct-reply-action .sf-icon { width: 14px; height: 14px; }
+  .sf.sf-row[data-role="ct.fork.origin"] { font-size: 12px; color: var(--t3); margin-bottom: 12px; }
   .ct-proposal {
     font-family: var(--ct-prose);
     font-size: 17px;
@@ -35,7 +47,7 @@ export const appearanceStyles = css`
   }
   .ct-proposal-side + .ct-proposal-side { margin-top: 14px; }
   .ct-proposal-label { color: var(--t3); font-size: 12px; line-height: 20px; margin-bottom: 4px; }
-  .ct-proposal-choice { display: flex; align-items: center; gap: 8px; width: fit-content; margin-bottom: 8px; font-size: 13px; color: var(--t2); cursor: pointer; }
+  .ct-proposal-choice { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; color: var(--t2); cursor: pointer; }
   .ct-proposal-choice [role="checkbox"] { cursor: pointer; }
   .ct-proposal-choice [aria-disabled="true"] { cursor: default; }
   .ct-proposal-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 4px 0 12px; }
@@ -158,7 +170,11 @@ export const appearanceStyles = css`
     margin-right: auto;
   }
   .sf.sf-col[data-role="omp.editor"] {
-    padding: 0;
+    /* Keep the custom three-row layout when Tern unfocuses the pane. */
+    padding: 0 !important;
+    min-height: 0 !important;
+    margin-top: 0;
+    margin-bottom: 0;
     border: 0;
     border-radius: 0;
     background: transparent;
@@ -166,10 +182,19 @@ export const appearanceStyles = css`
     backdrop-filter: none;
     filter: none;
     box-shadow: none;
-    gap: 4px;
+    gap: 4px !important;
+    animation: none;
+    transition: none;
+    transform: none;
   }
   .sf.sf-col[data-role="omp.editor"]::before,
   .sf.sf-col[data-role="omp.editor"]::after { display: none; }
+  .sf.sf-col[data-role="omp.editor"] > :is([data-role="omp.composer.line"], [data-role="omp.composer.chips"]) {
+    opacity: 1;
+    pointer-events: auto;
+    margin: 0 !important;
+    transition: none;
+  }
   .sf.sf-col[data-role="omp.editor"] > [data-role="omp.composer.line"] {
     min-height: 48px;
     padding: 11px 14px;
@@ -186,11 +211,14 @@ export const appearanceStyles = css`
   }
   .sf.sf-col[data-role="omp.editor"] > [data-role="omp.composer.bar"] {
     padding: 2px 2px 0;
+    margin: 0;
+    height: auto;
     min-height: 32px;
     gap: 4px 8px;
+    transition: none;
   }
-  /* Tern injects its own title/path here. Our model controls use this space. */
-  [data-role="omp.composer.bar"] > .sf-place { display: none; }
+  /* Tern's collapsed title/draft and path occupy the custom model controls. */
+  [data-role="omp.composer.bar"] > :is(.sf-place, .sf-caption) { display: none; }
   .sf.sf-row[data-role="ct.composer.settings"] {
     min-width: 0;
     flex: 1 1 180px;
@@ -201,7 +229,8 @@ export const appearanceStyles = css`
     gap: 4px;
   }
   .sf.sf-col[data-role="omp.editor"] [data-role="omp.composer.model"],
-  .sf.sf-col[data-role="omp.editor"] [data-role="omp.composer.effort"] {
+  .sf.sf-col[data-role="omp.editor"] [data-role="omp.composer.effort"],
+  .sf.sf-col[data-role="omp.editor"] [data-role="ct.composer.mode"] {
     min-height: 28px;
     padding: 4px 6px;
     border-radius: 7px;
@@ -222,6 +251,13 @@ export const appearanceStyles = css`
     white-space: nowrap;
   }
   .sf.sf-col[data-role="omp.editor"] [data-role="omp.composer.effort"] { flex-shrink: 0; }
+  .sf.sf-col[data-role="omp.editor"] [data-role="ct.composer.mode"] {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .sf.sf-col[data-role="omp.editor"] [data-role="ct.composer.mode"] .ico { width: 12px; height: 12px; }
   .sf.sf-row[data-role="ct.composer.actions"] > .sf-icon {
     width: 28px;
     height: 28px;
@@ -233,6 +269,7 @@ export const appearanceStyles = css`
   .sf.sf-row[data-role="ct.composer.actions"] > .sf-icon .ico { width: 14px; height: 14px; }
   .sf.sf-col[data-role="omp.editor"] [data-role="omp.composer.model"]:hover,
   .sf.sf-col[data-role="omp.editor"] [data-role="omp.composer.effort"]:hover,
+  .sf.sf-col[data-role="omp.editor"] [data-role="ct.composer.mode"]:hover,
   .sf.sf-row[data-role="ct.composer.actions"] > .sf-icon:hover {
     background: var(--l2);
     color: var(--t1);
@@ -245,6 +282,12 @@ export const appearanceStyles = css`
     min-height: 30px;
     margin: 0;
     flex-shrink: 0;
+  }
+  /* Center the native mark in clients that were already running before reload. */
+  .sf.sf-col[data-role="omp.editor"] [data-role="omp.composer.stop"]::before {
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
   }
   .sf.sf-row[data-role="ct.nav"] {
     width: 100%;
@@ -260,7 +303,9 @@ export const appearanceStyles = css`
     color: var(--t3);
   }
   .sf.sf-row[data-role="ct.nav"] .sf-status {
+    height: auto;
     min-height: 0;
+    margin: 0;
     padding: 0;
     gap: 10px;
     font-family: inherit;
@@ -323,7 +368,7 @@ export const appearanceStyles = css`
   .sf.sf-col[data-role="omp.editor"] > [data-role="omp.composer.line"]:focus-within {
     box-shadow: 0 0 0 1px var(--l2), 0 2px 10px rgb(0 0 0 / 4%);
   }
-  .sf.sf-col[data-role="omp.editor"] .ct-send {
+  .sf.sf-col[data-role="omp.editor"] :is(.ct-send, .ct-stop) {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -334,8 +379,14 @@ export const appearanceStyles = css`
     color: var(--card);
     cursor: pointer;
   }
-  .sf.sf-col[data-role="omp.editor"] .ct-send::before,
-  .sf.sf-col[data-role="omp.editor"] .ct-send::after { display: none; }
+  .sf.sf-col[data-role="omp.editor"] :is(.ct-send, .ct-stop)::before,
+  .sf.sf-col[data-role="omp.editor"] :is(.ct-send, .ct-stop)::after { display: none; }
+  .sf.sf-col[data-role="omp.editor"] .ct-stop-mark {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    background: currentColor;
+  }
   .sf.sf-col[data-role="omp.editor"] .ct-send .sf-icon,
   .sf.sf-col[data-role="omp.editor"] .ct-send .ico { width: 16px; height: 16px; color: inherit; }
   .sf.sf-col[data-role="omp.editor"] .ct-send[aria-disabled="true"] {
@@ -345,10 +396,13 @@ export const appearanceStyles = css`
     cursor: default;
   }
   .sf.sf-col[data-role="omp.editor"] .ct-send:not([aria-disabled="true"]):hover { background: var(--t2); }
+  .sf.sf-col[data-role="omp.editor"] .ct-stop:hover { background: var(--t2); }
+  .sf.sf-col[data-role="omp.editor"] .ct-stop:active { background: var(--t1); box-shadow: inset 0 0 0 2px var(--t3); }
   .sf.sf-col[data-role="omp.editor"] .ct-send:not([aria-disabled="true"]):active { background: var(--t1); box-shadow: inset 0 0 0 2px var(--t3); }
   .sf.sf-row[data-role="ct.composer.actions"] > .sf-icon:active,
   .sf.sf-col[data-role="omp.editor"] [data-role="omp.composer.model"]:active,
   .sf.sf-col[data-role="omp.editor"] [data-role="omp.composer.effort"]:active,
+  .sf.sf-col[data-role="omp.editor"] [data-role="ct.composer.mode"]:active,
   .sf.sf-el.ct-activity .ct-activity-toggle:active { background: var(--l2); }
   .sf.sf-el.ct-button {
     min-height: 32px;
@@ -445,6 +499,7 @@ export const appearanceStyles = css`
   .sf.sf-row[data-role="ct.composer.actions"] > .sf-icon:focus-visible,
   .sf.sf-col[data-role="omp.editor"] [data-role="omp.composer.model"]:focus-visible,
   .sf.sf-col[data-role="omp.editor"] [data-role="omp.composer.effort"]:focus-visible,
+  .sf.sf-col[data-role="omp.editor"] [data-role="ct.composer.mode"]:focus-visible,
   .sf.sf-col[data-role="omp.editor"] .ct-send:focus-visible,
   .sf.sf-col[data-role="omp.editor"] [data-role="omp.composer.stop"]:focus-visible,
   .sf.sf-el.ct-button:focus-visible,
@@ -453,4 +508,31 @@ export const appearanceStyles = css`
     outline: 2px solid var(--accent);
     outline-offset: 2px;
   }
+  .sf.sf-row[data-role="ct.completion"],
+  .sf.sf-row[data-role="ct.reconnect"] {
+    width: 100%;
+    max-width: 736px;
+    align-self: center;
+    padding: 9px 12px;
+    margin-bottom: 8px;
+    border: 1px solid var(--l2);
+    border-radius: 12px;
+    background: var(--card);
+    color: var(--t2);
+    font: 13px/20px var(--ct-prose);
+  }
+  [data-role="ct.completion.icon"] { color: var(--accent); }
+  [data-role="ct.completion"] > .sf-icon,
+  [data-role="ct.reconnect"] > .sf-icon { width: 14px; height: 14px; flex-shrink: 0; }
+  .sf.sf-el.ct-completion-action {
+    padding: 2px 6px;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--accent-ink);
+    font: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .sf.sf-el.ct-completion-action:hover { background: var(--raise); }
+  .sf.sf-el.ct-completion-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 `;

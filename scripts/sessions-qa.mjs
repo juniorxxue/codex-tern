@@ -5,12 +5,13 @@ import { existsSync, openSync, closeSync } from 'node:fs';
 import { resolve } from 'node:path';
 import assert from 'node:assert/strict';
 import { FileLock } from '@oh-my-pi/pi-natives';
+import { prepareTernQaConfig } from './qa-tern-config.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const out = resolve(root, '.prototype/sessions-qa');
-const config = resolve(out, 'config');
+const config = resolve(out, `config-${process.pid}`);
 const socket = `/tmp/codex-tern-sessions-qa-${process.pid}.sock`;
-await mkdir(config, { recursive: true });
+await prepareTernQaConfig(config);
 const codexHome = resolve(out, `codex-home-${process.pid}`);
 await mkdir(resolve(codexHome, 'thread-writer-locks'), { recursive: true });
 const occupied = FileLock.tryAcquire(resolve(codexHome, 'thread-writer-locks/saved-6.lock'));
@@ -18,7 +19,8 @@ const env = { ...process.env, TERN_CONFIG_DIR: config,
   STENCIL_LOG: 'warn,tern::plugin=debug',
   TERN_TSP_RECORD: resolve(out, 'client-wire.jsonl'),
   TERN_DAEMON_SOCKET: `/tmp/codex-tern-sessions-daemon-${process.pid}.sock`,
-  XDG_CACHE_HOME: resolve(out, 'cache'), QA_SESSION_FIXTURES: '1' };
+  QA_HISTORY_FILE: resolve(out, `history-${process.pid}.json`),
+  XDG_CACHE_HOME: resolve(out, 'cache'), XDG_STATE_HOME: resolve(out, `state-${process.pid}`), QA_SESSION_FIXTURES: '1' };
 delete env.TERN_WINDOW_KEY; delete env.TERN_WINDOW_SOCKET;
 execFileSync('tern', ['plugin', 'link', resolve(root, 'tern-plugin')], { env, encoding: 'utf8' });
 // Window-plugin timers are not polled by Tern 0.9.5's headless runner.
@@ -60,6 +62,27 @@ function pass(name) { results.push(name); console.log(`PASS ${name}`); }
 const panel = '[data-role="codex-tern.sessions"]';
 const row = title => `[data-role="codex-tern.sessions.item"][title="${title}"]`;
 const selected = '[data-role="codex-tern.sessions.item"][data-mark="pick"]';
+const deleteAction = '[role="menu"] > [role="menuitem"]:nth-child(2)';
+async function openDeleteMenu(title) {
+  const current = tree(selected)[0]?.title;
+  click(`${row(title)} right`);
+  await wait(() => text(deleteAction) === 'Delete session', 'session context menu');
+  assert.equal(tree(selected)[0]?.title, current, 'opening a context menu does not select its session');
+}
+async function remove(title) {
+  await openDeleteMenu(title);
+  click(deleteAction);
+}
+function assertComposerLayout(label) {
+  const line = tree('[data-role="omp.composer.line"]')[0]?.rect;
+  const bar = tree('[data-role="omp.composer.bar"]')[0]?.rect;
+  const nav = tree('[data-role="ct.nav"]')[0]?.rect;
+  assert.ok(line && bar && nav, `${label}: all composer rows remain mounted`);
+  assert.ok(line[1] + line[3] <= bar[1] + 1, `${label}: input stays above controls`);
+  assert.ok(bar[1] + bar[3] <= nav[1] + 1, `${label}: controls stay above status`);
+  assert.equal(tree('[data-role="omp.composer.bar"] > :is(.sf-place, .sf-caption)').length, 0,
+    `${label}: no host title or draft preview overlaps the controls`);
+}
 
 try {
   await wait(() => existsSync(env.TERN_DAEMON_SOCKET), 'isolated test daemon');
@@ -68,7 +91,7 @@ try {
   closeSync(log);
   await wait(() => existsSync(socket), 'isolated native renderer');
   ctl('style islands'); ctl('style glass');
-  const command = ['env', 'QA_SESSION_FIXTURES=1', 'QA_SESSION_FEEDBACK_TESTS=1', `QA_EMPTY_SESSION_CWD=${resolve(root, 'test/fixtures')}`, `QA_CODEX_HOME=${codexHome}`, `TERN_TSP_RECORD=${resolve(out, 'client-wire.jsonl')}`,
+  const command = ['env', 'QA_SESSION_FIXTURES=1', 'QA_SESSION_FEEDBACK_TESTS=1', `QA_EMPTY_SESSION_CWD=${resolve(root, 'test/fixtures')}`, `QA_CODEX_HOME=${codexHome}`, `QA_HISTORY_FILE=${env.QA_HISTORY_FILE}`, `TERN_TSP_RECORD=${resolve(out, 'client-wire.jsonl')}`,
     process.execPath, resolve(root, 'dist/cli.mjs'), '--codex', resolve(root, 'test/fixtures/ui-app-server.mjs')]
     .map(shellQuote).join(' ');
   ctl(`run ${JSON.stringify(command)}`);
@@ -87,6 +110,7 @@ try {
   assert.equal(ctl('state').panes.length, 2);
   assert.ok(!text(panel).includes('EXCLUDED_OTHER_FOLDER'));
   assert.equal(tree('[data-role="codex-tern.sessions.time"]').length, 0);
+  assert.equal(tree('[data-role="codex-tern.sessions.delete"]').length, 0, 'session rows have no trailing delete icon');
   assert.match(tree('[data-role="codex-tern.sessions.title"]')[0].title, /\d{2}:\d{2}/);
   assert.ok(tree('[data-role="codex-tern.sessions.item"]').every(n => n.rect[3] <= 34));
   assert.equal(tree('[data-role="omp.composer.dictation"]').length, 0);
@@ -101,12 +125,19 @@ try {
   pass('sidebar opens automatically with native cards, compact titles and unchanged composer focus');
 
   click('[data-role="codex-tern.sessions.folder"]');
-  assert.equal(tree('[data-role="omp.composer.bar"] > .sf-place').length, 0, 'inactive pane has no duplicate host title');
+  for (const delay of [0, 80, 160, 400]) {
+    if (delay) { ctl(`wait ${delay}`); await pause(delay); }
+    assertComposerLayout(`sidebar focus after ${delay} ms`);
+  }
   const modelBox = tree('[data-role="omp.composer.model"]')[0].rect;
   const effortBox = tree('[data-role="omp.composer.effort"]')[0].rect;
   assert.ok(effortBox[0] >= modelBox[0] + modelBox[2], 'model and effort controls do not overlap');
-  ctl('shot composer-sidebar-focused');
-  pass('focusing the sidebar keeps the composer model controls clear of duplicate labels');
+  const unfocusedShot = ctl('shot composer-sidebar-focused');
+  const unfocusedLayout = JSON.parse(await readFile(resolve(out, unfocusedShot.layout), 'utf8'));
+  const editorPath = unfocusedLayout.elements.find(e => e.path.endsWith('>div.sf-ed-text')).path;
+  const inputPath = editorPath.split('>').slice(0, -3).join('>');
+  assert.equal(unfocusedLayout.elements.find(e => e.path === inputPath).opacity, '1', 'unfocused input remains visible after the host collapse animation');
+  pass('sidebar focus keeps input, controls and status separate through the host collapse animation');
 
   execFileSync('tern', ['plugin', 'reload'], { env, encoding: 'utf8', timeout: 15000 });
   // No sidebar click or command after reload: either would restart polling and
@@ -138,6 +169,9 @@ try {
   click(row('Saved session 6')); await pause(200);
   assert.ok(text(selected).includes('QA session 1'));
   assert.ok(!text(panel).includes('active writer'));
+  await remove('Saved session 6');
+  await wait(() => text('.toast').includes('open in another client'), 'locked session deletion explanation');
+  assert.equal(tree(row('Saved session 6')).length, 1, 'the menu cannot delete a locked session');
   occupied.release();
   await wait(() => tree(`${row('Saved session 6')} [data-role="codex-tern.sessions.lock"]`).length === 0, 'released session unlocks');
   click(row('Saved session 6'));
@@ -241,8 +275,12 @@ try {
   assert.ok(text('.ct-activity').includes('Working'));
   await wait(() => tree('[data-role="codex-tern.sessions.item"]')[0]?.title === 'QA session 1', 'newest background activity moves to the top');
   assert.ok(text(selected).includes('Saved session 7'), 'activity sorting does not change the selected session');
-  click(row('QA session 1'));
+  await wait(() => text('[data-role="ct.completion"]').includes('Task complete')
+    && tree(`${row('QA session 1')} [data-role="codex-tern.sessions.completed"]`).length === 1, 'background completion reminder and unread marker');
+  ctl('shot background-completion');
+  click('[data-role="ct.completion"] button');
   await wait(() => text('[data-role="omp.assistant"]').includes('QA_BACKGROUND_DONE'), 'background result retained');
+  await wait(() => tree(`${row('QA session 1')} [data-role="codex-tern.sessions.completed"]`).length === 0, 'opening the result clears its marker');
   click(row('Saved session 7'));
   await wait(() => text(selected).includes('Saved session 7'), 'return to foreground task');
   await wait(() => text('.ct-activity').includes('Working'), 'foreground transcript finishes rendering');
@@ -285,6 +323,7 @@ try {
   click(row('QA session 1'));
   await wait(() => text('.sf-ed-text').includes('partial answer'), 'question answer draft retained');
   key('Enter');
+  await wait(() => tree('[aria-label="Submit answers"][aria-disabled="false"]').length === 1, 'answer ready to submit');
   click('[aria-label="Submit answers"]');
   await wait(() => text('[data-role="omp.assistant"]').includes('QA_RESPONSE_answered'), 'original question receives answer');
   pass('pending questions and partial answer drafts stay with their own session while switching');
@@ -292,8 +331,15 @@ try {
   type('hold'); key('Enter');
   await wait(() => text('.ct-activity').includes('Working'), 'task before new session');
   type('draft preserved before creating a session');
+  key('Shift+Enter'); type('Second line of the draft');
+  key('Shift+Enter'); type('Third line of the draft');
+  await wait(() => tree('[data-role="omp.composer.line"]')[0].rect[3] > 75, 'multiline composer before new session');
   const beforeNew = tree('[data-role="codex-tern.sessions.item"]').map(n => n.title);
   click('[data-role="codex-tern.sessions.new"]');
+  for (const delay of [0, 80, 160, 400]) {
+    if (delay) { ctl(`wait ${delay}`); await pause(delay); }
+    assertComposerLayout(`new session after ${delay} ms`);
+  }
   await wait(() => tree(selected).some(n => !beforeNew.includes(n.title)), 'sidebar creates and selects a new session');
   const createdTitle = tree(selected)[0].title;
   assert.equal(tree('[data-role="codex-tern.sessions.item"]').length, beforeNew.length + 1);
@@ -301,6 +347,8 @@ try {
   assert.equal(ctl('state').focused.id, client);
   await wait(() => !text('.sf-ed-text').includes('draft preserved') && tree('[data-role="ct.working"]').length === 0,
     'new session composer is blank and idle');
+  assert.ok(tree('[data-role="omp.composer.line"]')[0].rect[3] < 75, 'new session resets the multiline input height');
+  ctl('shot new-session-after-multiline-draft');
   await wait(() => tree(`${row('QA session 1')} [data-role="codex-tern.sessions.running"]`).length === 1, 'original task keeps running');
   type('draft in new session');
   click(row('QA session 1'));
@@ -313,20 +361,22 @@ try {
   ctl('shot sessions-new-button');
   pass('sidebar new session selects a blank conversation in the same project and preserves the original task and drafts');
 
-  const remove = title => `${row(title)} [data-role="codex-tern.sessions.delete"]`;
   const currentBeforeDelete = tree(selected)[0].title;
-  click(remove('Saved session 7'));
-  await pause(200);
+  await remove('Saved session 7');
+  await wait(() => text('.toast').includes('Finish this session'), 'draft deletion explanation');
   assert.equal(tree(selected)[0].title, currentBeforeDelete);
   assert.equal(tree(row('Saved session 7')).length, 1, 'a background draft cannot be deleted');
-  click(remove('Saved session 1'));
+  await openDeleteMenu('Saved session 1');
+  ctl('wait 400');
+  ctl('shot sessions-context-menu');
+  click(deleteAction);
   await wait(() => tree(row('Saved session 1')).length === 0, 'inactive row removed');
   assert.equal(tree(selected)[0].title, currentBeforeDelete, 'delete never activates the row');
   assert.ok(text('.sf-ed-text').includes('draft in new session'));
   pass('delete archives a background session without selecting it, and protects unsent drafts');
   key('Meta+a'); key('Backspace');
-  await wait(() => tree(`${remove(currentBeforeDelete)}[data-mark="disabled"]`).length === 0, 'blank session can be deleted');
-  click(remove(currentBeforeDelete));
+  await wait(() => !text('.sf-ed-text').includes('draft in new session'), 'draft cleared before deletion');
+  await remove(currentBeforeDelete);
   await wait(() => tree(row(currentBeforeDelete)).length === 0, 'selected session removed');
   await wait(() => tree(selected).length === 1 && beforeNew.includes(tree(selected)[0].title), 'existing neighbour selected');
   assert.ok(!text('.sf-ed-text').includes('draft in new session'));
@@ -351,15 +401,15 @@ try {
   type('First message in this folder'); key('Enter');
   await wait(() => tree(row('First message in this folder')).length === 1, 'first accepted message adds the session');
   await wait(() => text('[data-role="omp.assistant"]').includes('QA_REPLY'), 'first message completes');
-  await wait(() => tree(`${remove('First message in this folder')}[data-mark="disabled"]`).length === 0, 'completed first session can be deleted');
-  click(remove('First message in this folder'));
+  await wait(() => tree('[data-role="codex-tern.sessions.running"]').length === 0, 'completed first session can be deleted');
+  await remove('First message in this folder');
   await wait(() => tree('[data-role="codex-tern.sessions.item"]').length === 0 && tree('[data-role="omp.welcome"]').length === 1, 'deleting the only selected session leaves a hidden blank conversation');
   type('Second message in this folder'); key('Enter');
   await wait(() => tree(row('Second message in this folder')).length === 1 && text('[data-role="omp.assistant"]').includes('QA_REPLY'), 'replacement accepts a first message');
   click('[data-role="codex-tern.sessions.new"]');
   await wait(() => tree('[data-role="omp.welcome"]').length === 1, 'new blank conversation');
   assert.equal(tree('[data-role="codex-tern.sessions.item"]').length, 1, 'a new blank session adds no row');
-  click(remove('Second message in this folder'));
+  await remove('Second message in this folder');
   await wait(() => tree('[data-role="codex-tern.sessions.item"]').length === 0, 'last saved session deleted');
   ctl('plugins run plugin.codex-tern.sessions'); await pause(800);
   assert.equal(tree('[data-role="codex-tern.sessions.item"]').length, 0, 'deleting and refreshing leaves no replacement row');
@@ -369,6 +419,7 @@ try {
   ctl('style islands');
   for (const [width, height] of [[680, 720], [1280, 800]]) {
     ctl(`resize ${width} ${height}`);
+    assertComposerLayout(`window width ${width}`);
     assert.ok(tree('[data-role="omp.editor"]')[0].rect[2] > 200);
     ctl(`shot sessions-width-${width}`);
   }
@@ -386,15 +437,17 @@ try {
   assert.ok(text('.sf-ed-text').includes('Draft after closing the sidebar'));
   pass('manual closure stays closed; the command reopens one sidebar without losing the draft');
 
-  key('Meta+a'); key('Backspace'); key('Control+q');
+  key('Control+q');
   await wait(() => text('.sf-main').includes('The Codex client is closed.'), 'client exits before relaunch');
   ctl('ready');
   ctl(`run ${JSON.stringify(command)}`);
-  await wait(() => text('.sf-dock').includes('QA Model') && text(panel).includes('Saved session'), 'relaunch automatically reconnects the existing sidebar');
+  await wait(() => tree(panel).length === 1 && text('.sf-dock').includes('QA Model')
+    && text('.sf-ed-text').includes('Draft after closing the sidebar'), 'relaunch restores the last folder and its draft');
   assert.equal(tree(panel).length, 1);
   assert.equal(ctl('state').panes.length, 2);
   assert.equal(ctl('state').focused.id, client);
-  pass('relaunch automatically reuses the sidebar in the same pane');
+  assert.ok(text('[data-role="codex-tern.sessions.folder"]').includes('fixtures'));
+  pass('relaunch restores the last folder and draft and reuses the sidebar in the same pane');
 
   // Close just the client, leaving the native panel alive to verify stale actions.
   lua(`cx.layout:close(${client})`); ctl('carly close');
