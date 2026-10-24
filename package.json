@@ -21,6 +21,8 @@
     "test:proposals": "bun scripts/proposals-qa.mjs",
     "test:sessions": "bun scripts/sessions-qa.mjs",
     "test:session-actions": "bun scripts/session-actions-qa.mjs",
+    "test:session-titles": "bun scripts/session-titles-qa.mjs",
+    "test:settings": "bun scripts/settings-qa.mjs",
     "test:sidebar-width": "bun scripts/sidebar-width-qa.mjs",
     "check": "bun --bun tsc --noEmit",
     "smoke": "bun scripts/smoke.ts"

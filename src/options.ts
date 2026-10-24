@@ -8,13 +8,15 @@ Usage: codex-tern [OPTIONS] [PROMPT]
        codex-tern resume THREAD_ID [OPTIONS] [PROMPT]
        codex-tern setup
        codex-tern sessions
+       codex-tern reload
 
 Run in any project directory. Opens Tern when a native surface is unavailable.
 Uses the official codex app-server and your existing Codex login and settings.
 Approve for me is enabled by default; explicit -c settings take precedence.
 
-setup installs the native Tern command Codex: Sessions.
+setup installs the native Tern commands Codex: Sessions and Codex: Reload Window.
 sessions opens that panel in the current Tern window, reusing the open client.
+reload loads the latest built interface in the current window, keeping tasks running.
 
 Options:
   -C, --cd PATH           Use PATH as the project directory (default: current directory)
@@ -45,11 +47,11 @@ export function parseOptions(args: string[], cwd = process.cwd()) {
   } });
   if (values.cd !== undefined && values.cwd !== undefined) throw new Error('Use either --cd or --cwd, not both.');
   let resume = values.resume;
-  let command: 'setup' | 'sessions' | undefined;
+  let command: 'setup' | 'sessions' | 'reload' | undefined;
   const firstPositional = tokens.find(token => token.kind === 'positional');
   const terminator = tokens.find(token => token.kind === 'option-terminator');
-  if (['setup', 'sessions'].includes(positionals[0]) && (!terminator || firstPositional!.index < terminator.index)) {
-    command = positionals.shift() as 'setup' | 'sessions';
+  if (['setup', 'sessions', 'reload'].includes(positionals[0]) && (!terminator || firstPositional!.index < terminator.index)) {
+    command = positionals.shift() as 'setup' | 'sessions' | 'reload';
     if (positionals.length || resume || values.config?.length || values.plain || values.native)
       throw new Error(`Usage: codex-tern ${command}`);
   }

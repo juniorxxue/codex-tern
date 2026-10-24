@@ -33,7 +33,53 @@
 [data-role="codex-tern.sessions.lock"],
 [data-role="codex-tern.sessions.waiting"],
 [data-role="codex-tern.sessions.running"] { width: 13px; height: 13px; flex-shrink: 0; color: var(--t3); }
-[data-role="codex-tern.sessions.title"] { font-size: 14px; line-height: 22px; }
+[data-role="codex-tern.sessions.title"] {
+  min-width: 0;
+  height: 22px;
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 22px;
+}
+[data-role="codex-tern.sessions.reveal"] {
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+  gap: 0;
+}
+[data-role="codex-tern.sessions.label"] { min-width: 0; max-width: 100%; }
+[data-role="codex-tern.sessions.reveal"][data-mark="reveal"] > [data-role="codex-tern.sessions.label"] {
+  animation: ct-title-reveal 700ms cubic-bezier(.2,.65,.35,1) both;
+}
+[data-role="codex-tern.sessions.reveal"][data-mark="reveal"]::after {
+  content: "";
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  width: 24px;
+  height: 22px;
+  opacity: 0;
+  background:
+    radial-gradient(circle at 3px 6px, var(--t2) 0 1px, transparent 1.6px),
+    radial-gradient(circle at 10px 15px, var(--t2) 0 .8px, transparent 1.5px),
+    radial-gradient(circle at 15px 4px, var(--t3) 0 .7px, transparent 1.4px),
+    radial-gradient(circle at 20px 11px, var(--t2) 0 1px, transparent 1.6px),
+    radial-gradient(circle at 6px 19px, var(--t3) 0 .7px, transparent 1.4px);
+  animation: ct-title-particles 700ms cubic-bezier(.2,.65,.35,1) both;
+}
+@keyframes ct-title-reveal {
+  from { clip-path: inset(0 100% 0 0); opacity: .4; }
+  to { clip-path: inset(0 0 0 0); opacity: 1; }
+}
+@keyframes ct-title-particles {
+  0% { left: 0%; transform: translateX(-12px); opacity: 0; }
+  12% { opacity: .65; }
+  75% { opacity: .4; }
+  100% { left: 100%; transform: translateX(-8px); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-role="codex-tern.sessions.reveal"][data-mark="reveal"] > [data-role="codex-tern.sessions.label"],
+  [data-role="codex-tern.sessions.reveal"][data-mark="reveal"]::after { animation: none; }
+}
 [data-role="codex-tern.sessions.completed"],
 [data-role="codex-tern.sessions.failed"] { width: 13px; height: 13px; flex-shrink: 0; }
 [data-role="codex-tern.sessions.completed"] { color: var(--accent); }

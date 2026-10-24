@@ -9,7 +9,13 @@ export class RpcError extends Error {
 
 /** A written request may have taken effect even though no usable reply arrived. */
 export class RpcOutcomeUnknown extends Error {
+  override readonly name = 'RpcOutcomeUnknown';
   constructor(readonly method: Method, readonly requestId: RpcId, message: string) { super(message); }
+}
+
+/** Reloaded UI bundles have their own constructors; the transport stays alive. */
+export function isRpcOutcomeUnknown(error: unknown): error is RpcOutcomeUnknown {
+  return error instanceof Error && error.name === 'RpcOutcomeUnknown';
 }
 
 /** Only transport: no model calls, approval decisions, prompts, or retry of mutations. */
@@ -26,6 +32,9 @@ export class CodexRpc extends EventEmitter {
   ownsThread(id: string) { return this.owned.has(id); }
 
   constructor(readonly options: { binary?: string; cwd: string; args?: string[]; timeoutMs?: number }) { super(); }
+
+  /** Same installation and settings, with independent events and process lifetime. */
+  createPeer() { return new CodexRpc({ ...this.options, timeoutMs: 30_000 }); }
 
   async start() {
     if (this.child) throw new Error('Codex is already started');
@@ -128,6 +137,7 @@ export class CodexRpc extends EventEmitter {
   }
 
   async close() {
+    this.emit('closing');
     this.closing = true;
     this.connected = false;
     this.owned.clear();

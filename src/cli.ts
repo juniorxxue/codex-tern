@@ -6,6 +6,7 @@ import { findExecutable, openTern, focusClient } from './launch';
 import { CodexRpc } from './rpc';
 import { Controller } from './controller';
 import { RecoveryStore, recoveryPath } from './recovery';
+import { Preferences, preferencesPath } from './preferences';
 import type { ProjectInstance, ProjectCommand } from './project-instance';
 
 async function main() {
@@ -30,7 +31,7 @@ async function main() {
   const rpc = new CodexRpc({ binary: codex, cwd: options.cwd,
     args: ['-c', 'approval_policy="on-request"', '-c', 'approvals_reviewer="auto_review"',
       ...options.config.flatMap(value => ['-c', value])] });
-  const c = new Controller(rpc, rpc.options.cwd);
+  const c = new Controller(rpc, rpc.options.cwd, new Preferences(preferencesPath()));
   let instance: ProjectInstance | null = null;
   let shuttingDown = false;
   const close = async () => {
@@ -42,7 +43,7 @@ async function main() {
     finally { await instance?.close(); }
   };
   try {
-    const ui = options.plain ? null : await (await import('./ui')).createNativeUI(c);
+    const ui = options.plain ? null : await (await import('./native-host')).createNativeUI(c);
     if (!ui && !options.plain) {
       if (options.native) throw new Error('Tern native UI is unavailable. Run directly in a Tern pane without tmux, screen or zellij, or use --plain.');
       process.exitCode = await openTern(fileURLToPath(import.meta.url), nativeArgs(options, codex), options.cwd);

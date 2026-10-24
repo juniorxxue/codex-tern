@@ -9,6 +9,8 @@ import type { Thread } from './generated/v2/Thread';
 import type { ReasoningEffort } from './generated/ReasoningEffort';
 import type { Turn } from './generated/v2/Turn';
 import { RecoveryStore, type SavedDraft } from './recovery';
+import { SessionTitles } from './session-titles';
+import { Preferences } from './preferences';
 export type { DisplayItem, PendingRequest, QueuedInput, Notice } from './conversation';
 export interface Completion { threadId: string; turnId: string; title: string; status: 'completed' | 'failed' }
 
@@ -24,10 +26,15 @@ export class Controller extends EventEmitter {
   private recoveryError = '';
   private reconnecting?: Promise<void>;
   private readonly unread = new Map<string, Completion>();
+  private readonly titles: SessionTitles;
+  private readonly titleJobs = new Map<string, { abort: AbortController; name?: string }>();
+  private readonly titleChanges = new Map<string, { name: string; revision: string }>();
+  private readonly nameWrites = new Map<string, Promise<void>>();
   notifications = true;
 
-  constructor(readonly rpc: CodexRpc, cwd: string) {
+  constructor(readonly rpc: CodexRpc, cwd: string, readonly preferences = new Preferences()) {
     super();
+    this.titles = new SessionTitles(() => rpc.createPeer());
     this.selected = this.create(cwd);
     rpc.on('notification', (message: RpcMessage) => {
       if (message.method === 'turn/completed') this.sessionsVersion++;
@@ -36,10 +43,12 @@ export class Controller extends EventEmitter {
         return;
       }
       const id = message.params?.threadId ?? message.params?.thread?.id;
+      if (id && message.method === 'thread/name/updated') {
+        this.updateThreadName(id, message.params.threadName); return;
+      }
       const target = id ? this.conversation(id) : this.selected;
       if (target && message.method === 'thread/closed') target.hydrated = false;
       target?.onNotification(message);
-      if (id && message.method === 'thread/name/updated') this.updateThreadName(id, message.params.threadName);
     });
     rpc.on('request', (message: RpcMessage) => {
       const id = message.params?.threadId;
@@ -50,12 +59,14 @@ export class Controller extends EventEmitter {
       this.globalDiagnostics.push(text); this.globalDiagnostics = this.globalDiagnostics.slice(-30);
     });
     rpc.on('disconnected', (text: string) => {
+      this.cancelTitles();
       for (const conversation of this.all()) {
         conversation.connection = 'disconnected'; conversation.activeTurn = null;
         conversation.hydrated = false;
         conversation.requests = []; conversation.queuePaused = true; conversation.notice(text, true);
       }
     });
+    rpc.on('closing', () => this.cancelTitles());
   }
 
   private all() { return new Set([this.selected, ...this.conversations.values()]); }
@@ -102,7 +113,11 @@ export class Controller extends EventEmitter {
   private async prepareNew(cwd: string) {
     const path = resolve(this.cwd, cwd);
     if (!(await stat(path)).isDirectory()) throw new Error('The workspace path must be a directory');
-    const result = await this.rpc.request('thread/start', { cwd: path });
+    await this.preferences.load();
+    const model = this.preferences.model;
+    if (model && this.models.length && !this.models.some(m => m.model === model && !m.hidden))
+      throw new Error(`The saved model ${model} is unavailable. Choose another in New session model.`);
+    const result = await this.rpc.request('thread/start', { cwd: path, ...(model ? { model } : {}) });
     // A notification may already have registered this id while the RPC was pending.
     const next = this.conversation(result.thread.id);
     next.adopt(result); next.hydrated = true;
@@ -117,6 +132,7 @@ export class Controller extends EventEmitter {
     }
     let previous = '';
     conversation.on('activity', () => { this.sessionsVersion++; });
+    conversation.on('firstInput', (text: string) => { void this.generateTitle(conversation, text); });
     conversation.on('completed', (turn: Turn) => {
       if (!conversation.thread || !['completed', 'failed'].includes(turn.status)) return;
       // A queue is one stretch of work. Report success when its last turn ends.
@@ -211,6 +227,7 @@ export class Controller extends EventEmitter {
     return !!(c?.items.length || c?.activeTurn || c?.requests.length || c?.queue.length || c?.unconfirmed.length);
   }
   sessionThread(id: string) { return this.find(id)?.thread; }
+  sessionTitleRevision(id: string) { return this.titleChanges.get(id)?.revision; }
   isArchived(id: string) { return this.archived.has(id); }
   canArchiveSession(id: string) {
     const conversation = this.find(id);
@@ -223,6 +240,12 @@ export class Controller extends EventEmitter {
   }
   markRead(id: string) { if (this.unread.delete(id)) this.changed(); }
   setNotifications(enabled: boolean) { this.notifications = enabled; this.recovery?.setNotifications(enabled); this.changed(); }
+  get newSessionModel() { return this.preferences.model; }
+  async refreshPreferences() { await this.preferences.load(); this.changed(); }
+  async setNewSessionModel(model?: string) {
+    if (model && !this.models.some(m => m.model === model && !m.hidden)) throw new Error('Choose an available model.');
+    await this.preferences.setModel(model); this.changed();
+  }
 
   useRecovery(store: RecoveryStore) {
     this.recovery = store; this.notifications = store.notifications;
@@ -276,6 +299,8 @@ export class Controller extends EventEmitter {
   }
 
   async connect(resumeId?: string, fresh = false) {
+    try { await this.preferences.load(); }
+    catch (error) { this.notice(`Could not read new session preferences: ${(error as Error).message}`, true); }
     await this.selected.connect();
     this.connection = 'ready';
     for (const conversation of this.all()) {
@@ -359,8 +384,55 @@ export class Controller extends EventEmitter {
       }
     } finally { this.navigation = ''; this.changed(); }
   }
+  private cancelTitle(id: string) {
+    this.titleJobs.get(id)?.abort.abort();
+    this.titleJobs.delete(id);
+  }
+  private cancelTitles() { for (const id of this.titleJobs.keys()) this.cancelTitle(id); }
+  private async generateTitle(conversation: Conversation, prompt: string) {
+    const thread = conversation.thread;
+    if (!thread || thread.name?.trim() || this.titleJobs.has(thread.id)) return;
+    const id = thread.id, job = { abort: new AbortController(), name: undefined as string | undefined };
+    this.titleJobs.set(id, job);
+    const eligible = () => !job.abort.signal.aborted && !this.isArchived(id)
+      && this.connection === 'ready' && !this.find(id)?.thread?.name?.trim();
+    try {
+      const model = conversation.modelOverride ?? conversation.effective?.model;
+      const info = conversation.models.find(m => m.model === model || m.id === model);
+      const name = await this.titles.generate({ prompt, cwd: conversation.cwd, model,
+        modelProvider: conversation.effective?.modelProvider,
+        effort: info?.supportedReasoningEfforts.some(e => e.reasoningEffort === 'low') ? 'low' : undefined,
+      }, job.abort.signal);
+      if (!name || !eligible()) return;
+      await this.queueNameWrite(id, async () => {
+        if (!eligible()) return;
+        // Another client may have named the persisted session while generation ran.
+        const stored = await this.rpc.request('thread/read', { threadId: id });
+        if (!eligible()) return;
+        if (stored.thread.name?.trim()) { this.updateThreadName(id, stored.thread.name); return; }
+        job.name = name;
+        await this.rpc.request('thread/name/set', { threadId: id, name });
+        if (!job.abort.signal.aborted && !this.isArchived(id)) this.updateThreadName(id, name);
+      });
+    } catch { /* A title is optional. Keep the first-message preview on failure. */ }
+    finally { if (this.titleJobs.get(id) === job) this.titleJobs.delete(id); }
+  }
+  private queueNameWrite(id: string, write: () => Promise<void>) {
+    // A manual rename follows any already-written automatic rename, so it wins.
+    const next = (this.nameWrites.get(id) ?? Promise.resolve()).catch(() => {}).then(write);
+    this.nameWrites.set(id, next);
+    void next.finally(() => { if (this.nameWrites.get(id) === next) this.nameWrites.delete(id); }).catch(() => {});
+    return next;
+  }
   private updateThreadName(id: string, name: string | null) {
+    if (this.isArchived(id)) return;
     const conversation = this.conversation(id);
+    const job = this.titleJobs.get(id);
+    if (name && job?.name === name && !job.abort.signal.aborted) {
+      if (this.titleChanges.get(id)?.name !== name) this.titleChanges.set(id, { name, revision: randomUUID() });
+    } else if (conversation.thread?.name !== name) {
+      this.cancelTitle(id); this.titleChanges.delete(id);
+    }
     conversation.thread!.name = name;
     for (const owner of this.all()) for (const thread of owner.threads) if (thread.id === id) thread.name = name;
     this.saveConversation(conversation);
@@ -371,12 +443,16 @@ export class Controller extends EventEmitter {
     if (this.selecting || this.isArchived(id)) throw new Error('This session is unavailable.');
     const name = value.trim();
     if (!name) throw new Error('Enter a session name.');
-    await this.rpc.request('thread/name/set', { threadId: id, name });
-    this.updateThreadName(id, name);
+    this.cancelTitle(id); this.titleChanges.delete(id);
+    await this.queueNameWrite(id, async () => {
+      await this.rpc.request('thread/name/set', { threadId: id, name });
+      this.updateThreadName(id, name);
+    });
   }
   async archiveThread(id: string, replacementId?: string) {
     this.ensureSelection();
     if (!this.canArchiveSession(id)) throw new Error('Finish this session\'s task, answers and queue before deleting.');
+    this.cancelTitle(id);
     const current = this.thread?.id === id;
     this.navigation = 'Deleting session…'; this.changed();
     try {
@@ -389,6 +465,7 @@ export class Controller extends EventEmitter {
       await this.rpc.request('thread/archive', { threadId: id });
       this.archived.add(id);
       this.recovery?.remove(id); this.unread.delete(id);
+      this.titleChanges.delete(id);
       this.conversations.delete(id);
       if (next) { next.hydrated = true; this.selected = next; this.remember(next); }
       for (const conversation of this.all()) conversation.threads = conversation.threads.filter(t => t.id !== id);
@@ -398,7 +475,7 @@ export class Controller extends EventEmitter {
   async listThreads(all = false, more = false) {
     const target = this.selected;
     await target.listThreads(all, more);
-    target.threads = target.threads.filter(t => !this.isArchived(t.id)).map(t => {
+    target.threads = target.threads.filter(t => !t.ephemeral && !this.isArchived(t.id)).map(t => {
       const local = this.sessionThread(t.id);
       return local?.name !== undefined ? { ...t, name: local.name } : t;
     });

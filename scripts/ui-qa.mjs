@@ -1,7 +1,9 @@
 // Native Tern UI regression tests, using a deterministic app-server fixture.
 // Real Codex is covered separately by smoke.ts and manual native conversations.
 import { spawn, execFileSync } from 'node:child_process';
-import { readFile, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import assert from 'node:assert/strict';
 import { rasterizeSvg } from '@oh-my-pi/pi-natives';
@@ -14,6 +16,22 @@ const config = resolve(out, `config-${process.pid}`);
 await prepareTernQaConfig(config);
 const wire = resolve(out, 'client-wire.jsonl');
 await writeFile(wire, '');
+const rpcLog = resolve(out, `rpc-${process.pid}.jsonl`);
+await writeFile(rpcLog, '');
+// Record the OS reveal request without opening Finder during automated QA.
+const openLog = resolve(out, `open-${process.pid}.jsonl`);
+const openBin = resolve(out, `bin-${process.pid}`);
+await mkdir(openBin, { recursive: true });
+await writeFile(openLog, '');
+await writeFile(resolve(openBin, 'open'), `#!${process.execPath}\nimport { appendFileSync } from 'node:fs';\nappendFileSync(process.env.QA_OPEN_LOG, JSON.stringify(process.argv.slice(2)) + '\\n');\n`);
+await chmod(resolve(openBin, 'open'), 0o755);
+// Update only a private build when testing real code replacement and rollback.
+const clientDist = resolve(out, `client-${process.pid}/dist`);
+await mkdir(clientDist, { recursive: true });
+const uiManifest = JSON.parse(await readFile(resolve(root, 'dist/ui.json'), 'utf8'));
+await copyFile(resolve(root, 'dist/cli.mjs'), resolve(clientDist, 'cli.mjs'));
+await copyFile(resolve(root, 'dist', uiManifest.file), resolve(clientDist, uiManifest.file));
+await writeFile(resolve(clientDist, 'ui.json'), JSON.stringify(uiManifest));
 const pause = ms => new Promise(r => setTimeout(r, ms));
 const results = [];
 const portrait = resolve(out, 'e4b9a62df315ae72c11619abef4f475c09ad47a2c0188b93669c1fb5a2a937dd.png');
@@ -49,6 +67,18 @@ async function waitFor(check, description, ms = 10_000) {
   throw new Error(`Timed out: ${description}`);
 }
 function pass(name) { results.push(name); console.log(`PASS ${name}`); }
+const generation = () => Number([...readFileSync(wire, 'utf8').matchAll(/uiGeneration\\":(\d+)/g)].at(-1)?.[1] ?? 0);
+async function reloadWindow(shortcut = false) {
+  const before = generation();
+  if (shortcut) key('ctrl+shift+r');
+  else {
+    ctl('wait 250'); // Let the toolbar settle after typing or resizing before hit testing.
+    click('[aria-label="More actions"]');
+    await waitFor(() => text('.sf-layer').includes('Actions'), 'reload actions menu');
+    type('Reload Window'); key('enter');
+  }
+  await waitFor(() => generation() === before + 1, 'new UI generation');
+}
 async function assertNoTernErrors() {
   // A startup error can disappear when the first conversation replaces the
   // connecting state. Inspect every native event, not just the settled screen.
@@ -86,7 +116,7 @@ async function editCase(name, initial, operations, expected) {
 
 try {
   await waitFor(() => { try { execFileSync('test', ['-S', socket]); return true; } catch { return false; } }, 'Tern control socket');
-  const command = ['env', `TERN_TSP_RECORD=${wire}`, `QA_HISTORY_FILE=${resolve(out, `history-${process.pid}.json`)}`, process.execPath, `${root}/dist/cli.mjs`, '--codex',
+  const command = ['env', `PATH=${openBin}:${process.env.PATH}`, `QA_OPEN_LOG=${openLog}`, `TERN_TSP_RECORD=${wire}`, `QA_RPC_LOG=${rpcLog}`, `QA_HISTORY_FILE=${resolve(out, `history-${process.pid}.json`)}`, process.execPath, resolve(clientDist, 'cli.mjs'), '--codex',
     `${root}/test/fixtures/ui-app-server.mjs`].map(value => "'" + value.replaceAll("'", "'\\''") + "'").join(' ');
   ctl(`run ${JSON.stringify(command)}`);
   await waitFor(() => text('.sf-dock').includes('QA Model'), 'composer');
@@ -119,14 +149,60 @@ try {
   assert.ok(text(citationLink).includes('中文 [draft] (1) #?& 100%.txt'));
   assert.ok(text('[data-role="omp.assistant"] code').includes(':codex-file-citation'));
   ctl('shot assistant-file-citation');
+  click(`${citationLink} right`);
+  assert.ok(text('[role="menu"]').includes('Show in Finder'));
+  ctl('wait 200');
+  ctl('shot file-link-menu');
+  click('[role="menuitem"]:nth-child(2)');
+  await waitFor(() => readFileSync(openLog, 'utf8').trim().length > 0, 'Finder reveal request');
+  assert.deepEqual(JSON.parse(readFileSync(openLog, 'utf8').trim()),
+    ['-R', resolve(out, '中文 [draft] (1) #?& 100%.txt')]);
   click(citationLink);
   await waitFor(() => tree('section.tn-pane.file').length === 1, 'citation opens its local file');
   assert.equal(tree('.ed-loc')[0].title, resolve(out, '中文 [draft] (1) #?& 100%.txt') + '  ⌘L');
   ctl(`carly lua ${JSON.stringify('for _, pane in cx.session:panes() do if pane.kind == "file" then cx.layout:close(pane.pane) end end')}`); ctl('carly close');
   await waitFor(() => tree('section.tn-pane.file').length === 0, 'close the citation preview');
   pass('streaming and completed citations open the exact local file; code examples stay literal');
+  await writeFile(resolve(out, 'second.txt'), 'First line\nSecond line\n');
+  await send('QA_FILE_LINKS_FIXTURE');
+  const secondLink = '[data-role="ct.file-link"][title="' + resolve(out, 'second.txt') + '"] a';
+  await waitFor(() => tree(secondLink).length === 1, 'second link in a paragraph');
+  assert.ok(text('[data-role="omp.assistant"]').includes('First and Second'));
+  click(`${secondLink} right`);
+  assert.ok(text('[role="menu"]').includes('Show in Finder'));
+  click('[role="menuitem"]:nth-child(2)');
+  await waitFor(() => readFileSync(openLog, 'utf8').trim().split('\n').length === 2, 'second file reveal');
+  assert.deepEqual(JSON.parse(readFileSync(openLog, 'utf8').trim().split('\n')[1]), ['-R', resolve(out, 'second.txt')]);
+  const webLink = '[data-role="omp.assistant"] a[href="https://example.com"]';
+  click(`${webLink} right`);
+  assert.ok(!text('[role="menu"]').includes('Show in Finder'));
+  key('escape');
+  ctl('wait 200');
+  ctl('shot file-links-in-prose');
+  pass('right-click menus reveal the clicked file, preserve inline spaces, strip line numbers and exclude web links');
   key('ctrl+shift+n');
   await waitFor(() => tree('[data-role="omp.welcome"]').length === 1, 'blank session after citation fixture');
+
+  await send('QA_CONTINUING_TURN');
+  await waitFor(() => text('[data-role="omp.assistant"]').includes('QA_INTERIM_ANSWER'), 'answer before the turn ends');
+  assert.equal(text('[data-role="ct.activity.state"]'), 'Working');
+  assert.equal(tree('.ct-activity-indicator .sf-spinner').length, 1);
+  assert.equal(tree('[data-role="omp.composer.stop"]').length, 1);
+  await send('Keep the current core calculus');
+  await waitFor(() => tree('[data-role="ct.activity.state"]').length === 2, 'continued activity after steering');
+  assert.deepEqual(tree('[data-role="ct.activity.state"]').map(n => n.text), ['Worked', 'Working']);
+  assert.equal(tree('.ct-activity-indicator .sf-spinner').length, 1);
+  assert.ok(text('.ct-activity-preview').includes('Thinking'));
+  assert.equal(tree('[data-role="omp.composer.stop"]').length, 1);
+  ctl('shot continuing-after-answer');
+  await send('QA_FINISH_CONTINUING');
+  await waitFor(() => tree('[data-role="omp.composer.stop"]').length === 0, 'continued turn finishes');
+  assert.ok(tree('[data-role="ct.activity.state"]').every(n => n.text === 'Worked'));
+  assert.equal(tree('.ct-activity-indicator .sf-spinner').length, 0);
+  assert.equal(tree('.ct-activity-preview').length, 0);
+  pass('delivered answers and steering keep the latest activity Working until turn completion');
+  key('ctrl+shift+n');
+  await waitFor(() => tree('[data-role="omp.welcome"]').length === 1, 'blank session after continuing turn');
 
   type('unsent settings draft');
   key('super+,'); await waitFor(() => ctl('state').prefs !== null, 'Command+, terminal settings');
@@ -212,6 +288,32 @@ try {
   ctl('shot compact-running');
   pass('bounded live command preview, one Working status, and a unified toolbar at narrow and wide widths');
   type('draft during work');
+  const rpcBeforeReload = await readFile(rpcLog, 'utf8');
+  const originalUI = await readFile(resolve(clientDist, uiManifest.file), 'utf8');
+  const updatedUI = originalUI.replaceAll('"Working"', '"Working after reload"');
+  assert.notEqual(updatedUI, originalUI);
+  const updatedFile = `ui-${createHash('sha256').update(updatedUI).digest('hex')}.mjs`;
+  await writeFile(resolve(clientDist, updatedFile), updatedUI);
+  await writeFile(resolve(clientDist, 'ui.json'), JSON.stringify({ file: updatedFile }));
+  await reloadWindow();
+  await waitFor(() => text('[data-role="ct.activity.state"]').includes('Working after reload'), 'updated renderer code');
+  assert.ok(text('.sf-ed-text').includes('draft during work'));
+  assert.equal(tree('[data-role="omp.composer.stop"]').length, 1);
+  assert.equal(await readFile(rpcLog, 'utf8'), rpcBeforeReload, 'reload makes no backend calls or new process');
+  ctl('shot reloaded-running-window');
+  await writeFile(resolve(clientDist, 'ui.json'), JSON.stringify({ file: `ui-${'0'.repeat(64)}.mjs` }));
+  const beforeFailure = generation();
+  key('ctrl+shift+r');
+  await waitFor(() => text('[data-role="omp.error"]').includes('Could not reload window'), 'failed reload keeps the old UI');
+  assert.equal(generation(), beforeFailure);
+  assert.ok(text('[data-role="ct.activity.state"]').includes('Working after reload'));
+  assert.ok(text('.sf-ed-text').includes('draft during work'));
+  click('[data-role="omp.error"] button');
+  await writeFile(resolve(clientDist, 'ui.json'), JSON.stringify(uiManifest));
+  await reloadWindow(true);
+  await waitFor(() => text('[data-role="ct.activity.state"]') === 'Working', 'original renderer restored');
+  assert.equal(await readFile(rpcLog, 'utf8'), rpcBeforeReload);
+  pass('Reload Window loads changed code during a turn, preserves typing and recovers from a missing build without backend calls');
   await waitFor(() => tree(`${sendButton}[aria-disabled="false"]`).length === 1, 'a running draft shows Send beside Stop');
   click('[data-role="ct.composer.mode"]');
   await waitFor(() => text('.sf-layer').includes('Send while running'), 'send mode choices');
@@ -232,12 +334,18 @@ try {
 
 
   click('.ct-activity-toggle'); await waitFor(() => text('.ct-activity').includes('Run command'), 'opened details');
-  await send('steer');
+  await send('QA_DELAYED_STEER');
+  await waitFor(() => text('[data-role="ct.user.delivery"]').includes('Waiting for Codex'), 'steer visible before backend message');
+  assert.equal(tree('[data-role="omp.user"]').filter(n => n.text.includes('QA_DELAYED_STEER')).length, 1);
+  assert.ok(!text('.sf-ed-text').includes('QA_DELAYED_STEER'), 'submitted steer leaves the composer');
+  ctl('shot steer-awaiting-message');
   await waitFor(() => text('[data-role="omp.assistant"]').includes('QA_STEERED'), 'steered answer');
+  assert.equal(tree('[data-role="ct.user.delivery"]').length, 0);
+  assert.equal(tree('[data-role="omp.user"]').filter(n => n.text.includes('QA_DELAYED_STEER')).length, 1);
   assert.ok(!text('.ct-activity').includes('Run command'));
   assert.equal(tree('[data-role="ct.working"]').length, 0);
   ctl('shot completed-collapsed');
-  pass('steer and auto-collapse even after details were opened while running');
+  pass('steer stays visible until confirmed once, and completed activity auto-collapses');
   click('.ct-activity-toggle'); await waitFor(() => text('.ct-activity').includes('Run command'), 'reopened details'); click('.ct-activity-toggle');
   await waitFor(() => !text('.ct-activity').includes('Run command'), 'hidden details');
   pass('reopen and hide completed details');
@@ -276,6 +384,9 @@ try {
   ctl('shot question-unselected');
   click('.ct-choice'); await waitFor(() => tree('.ct-request .ct-primary[aria-disabled="false"]').length === 1, 'selected question');
   assert.equal(tree('.ct-choice[aria-pressed="true"]').length, 1);
+  await reloadWindow();
+  assert.equal(tree('.ct-choice[aria-pressed="true"]').length, 1);
+  assert.ok(text('.ct-request').includes('Choose a color'));
   ctl('shot question-selected');
   click('.ct-request .ct-primary');
   await waitFor(() => text('[data-role="omp.assistant"]').includes('QA_RESPONSE_answered'), 'question result');
@@ -354,12 +465,12 @@ try {
 
   click('[aria-label="More actions"]'); await waitFor(() => text('.sf-layer').includes('Actions'), 'actions menu');
   type('Session details'); await waitFor(() => text('.sf-layer').includes('Session details'), 'session details menu choice');
-  key('enter'); await waitFor(() => text('.sf-layer').includes('Tested Codex version'), 'session details with notices');
+  key('enter'); await waitFor(() => tree('[data-role="ct.details.technical"]').length === 1, 'session details with notices');
   assert.ok(text('.sf-layer').includes('Session details'));
-  assert.ok(text('.sf-layer').includes('Approve for me'));
+  assert.ok(text('.ct-detail-value').includes('Automatic review'));
   ctl('shot session-details-with-notices'); key('escape');
-  await waitFor(() => !text('.sf-layer').includes('Tested Codex version'), 'closed session details');
-  pass('session details show Approve for me with configuration notices');
+  await waitFor(() => tree('[data-role="ct.dialog.details"]').length === 0, 'closed session details');
+  pass('session details show automatic review with configuration notices');
   click('[aria-label="More actions"]'); await waitFor(() => text('.sf-layer').includes('Actions'), 'help actions menu');
   type('Keyboard'); await waitFor(() => text('.sf-layer').includes('Keyboard shortcuts'), 'help menu choice');
   key('enter'); await waitFor(() => text('.sf-layer').includes('Getting started'), 'help panel');
@@ -378,7 +489,7 @@ try {
   key('escape'); await waitFor(() => !text('.sf-layer').includes('QA_FILE_OK'), 'closed diff');
   pass('changes panel shows complete turn diff');
 
-  click('[data-role="omp.status.path"]'); await waitFor(() => text('.sf-layer').includes('Start a new session'), 'workspace panel');
+  click('[data-role="omp.status.path"]'); await waitFor(() => tree('[data-role="ct.dialog.workspace"]').length === 1, 'workspace panel');
   key('super+a'); type(resolve(root, 'test/fixtures')); key('enter');
   await waitFor(() => text('[data-role="omp.status.path"]').includes('fixtures'), 'workspace label');
   assert.ok(text('[data-role="omp.status.path"]').includes('fixtures'));

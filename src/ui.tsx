@@ -1,6 +1,7 @@
 /** @jsxImportSource @stencil-hq/tern */
-import { connect, css, html, type Session, type Surface, type PickerItem, type Key } from '@stencil-hq/tern';
-import { basename, resolve } from 'node:path';
+import { css, html, type Session, type Surface, type PickerItem, type Key } from '@stencil-hq/tern';
+import { basename, dirname, join, resolve } from 'node:path';
+import { readdir, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { projectRoot } from './project-instance';
 import { isImagePath, loadImage, savePastedImage, pastedImagePaths, type PreviewImage } from './attachments';
@@ -14,7 +15,7 @@ import { FolderSessions } from './folder-sessions';
 import { sessionInUse } from './session-locks';
 import { Draft } from './draft';
 import { Composer } from './composer';
-import { RpcOutcomeUnknown } from './rpc';
+import { isRpcOutcomeUnknown } from './rpc';
 import type { ReasoningEffort } from './generated/ReasoningEffort';
 import type { UserInput } from './generated/v2/UserInput';
 import { Welcome, ComposerFrame } from './omp-views';
@@ -22,9 +23,12 @@ import { ompNode } from './omp-native';
 import { transcriptParts, activitySummary, compactActivity, type TranscriptPart } from './activity';
 import { appearanceStyles } from './appearance';
 import { assistantMarkdown } from './assistant-markdown';
+import { FileMarkdown } from './file-markdown';
+import { showInFinder } from './file-links';
 import { assistantParts } from './proposals';
 import { ProposalView } from './proposal-view';
 import { runPluginCommand } from './tern-plugin';
+import { SessionDetails, WorkspaceForm, modelName } from './session-panels';
 
 const styles = css`
   .ct-buttons { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -47,6 +51,10 @@ const styles = css`
   [data-role="omp.user.images"] .sf-image img { display: block; max-width: 100%; height: auto; object-fit: contain; }
 `;
 
+// Increment when the retained runtime or reload state needs an incompatible change.
+export const UI_API_VERSION = 1;
+export type NativeUIState = ReturnType<NativeUI['reloadState']>;
+
 export class NativeUI {
   private readonly clientInstance = randomUUID();
   private sidebarRequested = false;
@@ -61,7 +69,14 @@ export class NativeUI {
   private pasting = 0;
   private failedPreviews = new Set<string>();
   private deferredKeys: Key[] = [];
-  panel: 'history' | 'models' | 'effort' | 'send-mode' | 'workspace' | 'attach' | 'rename' | 'details' | 'help' | 'diff' | 'menu' | null = null;
+  panel: 'history' | 'models' | 'default-model' | 'folders' | 'effort' | 'send-mode' | 'workspace' | 'attach' | 'rename' | 'details' | 'help' | 'diff' | 'menu' | null = null;
+  private pickerReturn?: { panel: 'workspace' | 'details'; draft: Draft };
+  private preferenceSaving = false;
+  private preferenceError = '';
+  private workspaceError = '';
+  private workspaceOpening = false;
+  private folderBrowser = { directory: '', items: [] as PickerItem[], loading: false, error: '' };
+  private folderRead = 0;
   private renaming?: { id: string; saving: boolean; error: string };
   allThreads = false;
   historyLoading = false;
@@ -69,6 +84,7 @@ export class NativeUI {
   sendMode: 'steer' | 'queue' = 'steer';
   private renderTimer?: NodeJS.Timeout;
   private ended = false;
+  private pendingActions = 0;
   private focused = 'dock.body.line.input';
   private savedDraft: Draft | null = null;
   private pickerSelected = '';
@@ -86,18 +102,60 @@ export class NativeUI {
   private completion?: Completion;
   private completionTimer?: ReturnType<typeof setTimeout>;
   private visible = true;
+  generation = 0;
+  reloadWindow?: () => Promise<void>;
   notify: (event: Completion) => void = event => {
     if (process.stdout.isTTY) process.stdout.write(completionNotification(event));
   };
 
   constructor(readonly c: Controller, readonly session: Session, readonly surface: Surface,
-    readonly enhanced?: EnhancedPasteController, readonly clipboardInput?: ClipboardInput) {
-    surface.stylesheet('codex-tern', styles);
-    surface.stylesheet('codex-tern-appearance', appearanceStyles);
+    readonly enhanced?: EnhancedPasteController, readonly clipboardInput?: ClipboardInput, state?: NativeUIState) {
+    this.applyStyles();
     this.projectDirectory = c.cwd;
     this.folderSessions = new FolderSessions(c, () => this.schedule());
+    if (state) {
+      const { folder, ...saved } = state;
+      Object.assign(this, saved);
+      this.folderSessions.restoreReloadState(folder);
+    }
     c.on('change', this.onChange);
     c.on('completion', this.onCompletion);
+  }
+
+  applyStyles() {
+    this.surface.stylesheet('codex-tern', styles);
+    this.surface.stylesheet('codex-tern-appearance', appearanceStyles);
+  }
+
+  assertReloadable() {
+    if (this.ended) throw new Error('This window is closed.');
+    if (this.pasting || this.pendingActions || this.c.operation || this.c.selecting
+      || this.renaming?.saving || this.historyLoading || this.sidebarRequested)
+      throw new Error('Wait for the current input or session action to finish, then reload the window.');
+  }
+
+  reloadState() {
+    this.assertReloadable(); this.syncComposer();
+    return { clientInstance: this.clientInstance, projectDirectory: this.projectDirectory,
+      composer: this.composer, composerThread: this.composerThread, sessionDrafts: this.sessionDrafts,
+      savedDraft: this.savedDraft, answerTarget: this.answerTarget, dialogDraft: this.dialogDraft,
+      panel: this.panel, renaming: this.renaming, allThreads: this.allThreads, pickerSelected: this.pickerSelected,
+      pickerReturn: this.pickerReturn, folderBrowser: this.folderBrowser, workspaceError: this.workspaceError,
+      focused: this.focused, visible: this.visible, sendMode: this.sendMode,
+      activityModes: this.activityModes, proposalSelections: this.proposalSelections, proposalDrafts: this.proposalDrafts,
+      previews: this.previews, failedPreviews: this.failedPreviews, folder: this.folderSessions.reloadState() };
+  }
+
+  private requestReload() {
+    if (!this.reloadWindow) return;
+    if (this.panel === 'menu') this.closePanel();
+    void this.reloadWindow().catch(error => this.c.notice(`Could not reload window: ${error.message}`, true));
+  }
+
+  focus() { this.surface.focus(this.focused || null); }
+  setVisible(visible: boolean) {
+    this.visible = visible;
+    if (visible && this.c.thread) this.c.markRead(this.c.thread.id);
   }
 
   private onChange = () => {
@@ -152,7 +210,10 @@ export class NativeUI {
     if (this.ended || this.renderTimer) return;
     this.renderTimer = setTimeout(() => { this.renderTimer = undefined; this.render(); }, 25);
   }
-  private action(fn: () => Promise<unknown>) { void this.c.act(fn); }
+  private action(fn: () => Promise<unknown>) {
+    this.pendingActions++;
+    void this.c.act(fn).finally(() => { this.pendingActions--; });
+  }
   private button(label: string, action: () => void, extra = '', disabled = false) {
     return <html.button key={label} class={`ct-button ${extra}`} aria={label} attrs={{ 'aria-disabled': disabled }}
       onClick={disabled ? undefined : () => { action(); this.render(); }}>{label}</html.button>;
@@ -188,10 +249,10 @@ export class NativeUI {
     if (this.panel || this.pasting) throw new Error('Finish the paste or close the open dialog before renaming.');
     if (this.c.connection !== 'ready' || this.c.selecting) throw new Error('Wait for the session to finish connecting.');
     this.renaming = { id: thread.id, saving: false, error: '' };
-    this.openPanel('rename', thread.name || thread.preview || '');
+    this.openPanel('rename', (thread.name || thread.preview || '').replace(/\s+/g, ' ').trim());
   }
   private async confirmRename() {
-    const target = this.renaming, name = this.dialogDraft.text.trim();
+    const target = this.renaming, name = this.dialogDraft.text.replace(/\s+/g, ' ').trim();
     if (this.panel !== 'rename' || !target || target.saving || !name) return;
     target.saving = true; target.error = ''; this.render();
     try {
@@ -273,22 +334,86 @@ export class NativeUI {
       }
     }
   }
-  private closePanel() { this.panel = null; this.renaming = undefined; this.render(); this.focusComposer(); }
+  private closePanel() {
+    this.folderRead++;
+    if (this.pickerReturn && ['default-model', 'folders', 'models', 'effort'].includes(this.panel ?? '')) {
+      const back = this.pickerReturn; this.pickerReturn = undefined;
+      this.panel = back.panel; this.dialogDraft = back.draft; this.render();
+      this.focused = back.panel === 'workspace' ? 'layer.panel.body.field' : '';
+      this.surface.focus(this.focused || null); return;
+    }
+    this.panel = null; this.renaming = undefined; this.pickerReturn = undefined;
+    this.render(); this.focusComposer();
+  }
+  private openModelPicker(panel: 'default-model' | 'models' | 'effort') {
+    if (this.panel === 'workspace' || this.panel === 'details')
+      this.pickerReturn = { panel: this.panel, draft: this.dialogDraft };
+    this.openPanel(panel);
+  }
   private openPanel(panel: NonNullable<NativeUI['panel']>, text = '') {
     if (this.pasting) { this.c.notice('Wait for the paste to finish.'); return; }
     this.panel = panel; this.dialogDraft = new Draft();
-    this.pickerSelected = panel === 'models' ? this.c.model : panel === 'effort' ? this.c.effort
+    this.pickerSelected = panel === 'models' ? this.c.model : panel === 'default-model' ? this.c.newSessionModel ?? 'codex-default' : panel === 'effort' ? this.c.effort
       : panel === 'send-mode' ? this.sendMode : panel === 'history' ? this.c.thread?.id ?? '' : '';
     if (panel === 'history') {
       this.historyLoading = true;
       this.action(async () => { try { await this.c.listThreads(this.allThreads); } finally { this.historyLoading = false; this.render(); } });
     }
-    if (panel === 'workspace') this.dialogDraft.set(this.c.cwd);
+    if (panel === 'workspace') { this.dialogDraft.set(this.c.cwd); this.workspaceError = ''; }
     else if (panel === 'rename') this.dialogDraft.set(text);
+    if (panel === 'default-model') this.preferenceError = '';
+    if (['default-model', 'workspace', 'details'].includes(panel) && this.c.refreshPreferences)
+      this.action(() => this.c.refreshPreferences());
     this.render();
     if (panel === 'workspace' || panel === 'attach' || panel === 'rename') {
       this.focused = 'layer.panel.body.field'; this.surface.focus(this.focused);
     } else { this.focused = ''; this.surface.focus(null); }
+  }
+
+  private async saveDefaultModel(id: string) {
+    if (this.preferenceSaving) return;
+    this.preferenceSaving = true; this.preferenceError = ''; this.render();
+    try {
+      if (!this.c.setNewSessionModel) throw new Error('Finish running tasks, then restart codex-tern once to enable saved defaults.');
+      await this.c.setNewSessionModel(id === 'codex-default' ? undefined : id);
+      if (this.panel === 'default-model') this.closePanel();
+    } catch (error) { this.preferenceError = (error as Error).message; }
+    finally { this.preferenceSaving = false; this.render(); }
+  }
+
+  private async browseFolders() {
+    this.pickerReturn = { panel: 'workspace', draft: this.dialogDraft };
+    const path = this.workspacePath();
+    this.openPanel('folders');
+    await this.readFolders(path);
+  }
+  private async readFolders(directory: string) {
+    const read = ++this.folderRead;
+    this.folderBrowser = { directory, items: [], loading: true, error: '' };
+    this.dialogDraft.set(''); this.render();
+    try {
+      const entries = await readdir(directory, { withFileTypes: true });
+      const directories = (await Promise.all(entries.map(async entry => entry.isDirectory()
+        || (entry.isSymbolicLink() && (await stat(join(directory, entry.name)).catch(() => null))?.isDirectory()) ? entry.name : null)))
+        .filter((name): name is string => name !== null).sort((a, b) => a.localeCompare(b));
+      if (read !== this.folderRead || this.panel !== 'folders') return;
+      this.folderBrowser.items = [
+        ...(dirname(directory) !== directory ? [{ id: dirname(directory), label: 'Parent folder', detail: dirname(directory), icon: 'arrow-up' }] : []),
+        ...directories.map(name => ({ id: join(directory, name), label: name, icon: 'folder' })),
+      ];
+    } catch (error) {
+      if (read === this.folderRead) this.folderBrowser.error = `Could not open this folder: ${(error as Error).message}`;
+    } finally {
+      if (read === this.folderRead) { this.folderBrowser.loading = false; this.render(); }
+    }
+  }
+  private useFolder() {
+    if (this.folderBrowser.loading || this.folderBrowser.error) return;
+    this.pickerReturn?.draft.set(this.folderBrowser.directory);
+    this.workspaceError = ''; this.closePanel();
+  }
+  private workspacePath() {
+    return resolve(this.c.cwd, this.dialogDraft.text.trim().replace(/^~(?=\/|$)/, process.env.HOME ?? '~'));
   }
 
   private renderAssistant(entry: DisplayItem, text: string) {
@@ -312,8 +437,9 @@ export class NativeUI {
     let number = 0;
     return <col key={entry.id} role="omp.assistant" gap="xs">
       {parts.map(part => {
-        if (part.kind === 'markdown') return <md key={`text-${part.start}`} text={assistantMarkdown(part.text, this.c.cwd)}
-          stream={!entry.done} actions={{ menu: ['copy'] }} />;
+        if (part.kind === 'markdown') return <FileMarkdown key={`text-${part.start}`}
+          text={assistantMarkdown(part.text, this.c.cwd)} cwd={this.c.cwd} stream={!entry.done}
+          onReveal={path => this.action(() => showInFinder(path))} />;
         const id = ids[number++]!;
         return <ProposalView key={`proposal-${part.start}`} before={part.before} after={part.after}
           number={number} checked={selection.has(id)} disabled={disabled} onSelect={checked => {
@@ -364,14 +490,17 @@ export class NativeUI {
       const images = content.filter(p => p.type === 'localImage' || p.type === 'image');
       const text = content.filter(p => p.type !== 'localImage' && p.type !== 'image')
         .map(p => p.type === 'text' ? p.text : `[${p.type}] ${'path' in p ? p.path : ''}`).join('\n');
-      return <card key={entry.id} role="omp.user" tone="user">
+      return <card key={i.clientId ? `${entry.turnId}:client:${i.clientId}` : entry.id} role="omp.user" tone="user">
         <col key="content" gap="sm">
           {!!images.length && <row key="images" role="omp.user.images" gap="sm" wrap>
             {images.map((p, n) => p.type === 'localImage' ? this.imageNode(p.path)
               : 'url' in p && p.url.startsWith('data:') ? this.imageNode(p.url)
               : <text key={`unavailable-${n}`} tone="muted" text="Image unavailable" />)}
           </row>}
-          {!!text && <md key="text" actions={{ menu: ['copy'] }} text={text} />}
+          {!!text && <FileMarkdown key="text" text={text} cwd={this.c.cwd}
+            onReveal={path => this.action(() => showInFinder(path))} />}
+          {entry.delivery && <text key="delivery" role="ct.user.delivery" tone="muted"
+            text={entry.delivery === 'sending' ? 'Sending…' : 'Waiting for Codex…'} />}
         </col>
       </card>;
     }
@@ -407,11 +536,11 @@ export class NativeUI {
 
   private renderActivity(part: Extract<TranscriptPart, { kind: 'activity' }>, latest: boolean) {
     const turn = this.c.turns.get(part.turnId);
-    const finalDelivered = this.c.items.some(e => e.turnId === part.turnId && e.item.type === 'agentMessage'
-      && e.item.phase === 'final_answer' && e.done);
-    const live = latest && this.c.activeTurn === part.turnId && !finalDelivered;
+    // An answer can be delivered before work continues in the same turn.
+    // Use the turn lifecycle, as the Stop button and session status do.
+    const live = latest && this.c.activeTurn === part.turnId;
     // A completed turn gets a new default. Opening details during a run never
-    // leaves command output expanded after the answer arrives.
+    // leaves command output expanded after the turn ends.
     const key = `${part.id}:${live ? 'live' : 'ended'}`;
     const mode = this.activityModes.get(key) ?? (live ? 'compact' : 'collapsed');
     const errors = part.entries.some(({ item }) => ('status' in item && (item.status === 'failed' || item.status === 'declined'))
@@ -554,8 +683,10 @@ export class NativeUI {
           sidebarRequest: this.sidebarRequested ? this.clientInstance : undefined,
           cellWidth: this.session.caps.cell.w,
           rows: this.folderSessions.snapshot.rows.map(row => ({ ...row, canArchive: row.canArchive && !this.hasSessionDraft(row.id) })),
-          archiveProtocol: 1, renameProtocol: 1, navigationProtocol: 1, newSessionProtocol: 1, navigation: this.sidebarNavigation })}
+          archiveProtocol: 1, renameProtocol: 1, navigationProtocol: 1, newSessionProtocol: 1,
+          reloadProtocol: this.reloadWindow ? 1 : undefined, uiGeneration: this.generation, navigation: this.sidebarNavigation })}
           onAction={{ refresh: () => { void this.folderSessions.refresh(); },
+            reload: () => this.requestReload(),
             locks: () => { void this.folderSessions.refreshLocks(); },
             more: () => { void this.folderSessions.refresh(true); },
             hide: () => this.folderSessions.hide(),
@@ -668,8 +799,8 @@ export class NativeUI {
       </col>,
       layer: <col>{!this.panel && (this.draft.describe().c ?? []).filter((n): n is import('@oh-my-pi/pi-tui/native/node').NativeNode => 'k' in n && n.k === 'overlay')
         .map(n => ompNode(n, this.draft.context, () => this.render()))}
-        {this.isPicker() ? this.renderPicker() : this.panel && <overlay key="panel" anchor="center" size={this.panel === 'diff' ? 'lg' : 'md'} modal head={this.panelTitle()}>
-        <col key="body" gap="sm">{this.renderPanel()}<rule />{this.button(this.panel === 'rename' ? 'Cancel · Esc' : 'Close · Esc', () => this.closePanel())}</col>
+        {this.isPicker() ? this.renderPicker() : this.panel && <overlay key="panel" role={`ct.dialog.${this.panel}`} anchor="center" size={this.panel === 'diff' ? 'lg' : 'md'} modal head={this.panelTitle()}>
+        <col key="body" gap="sm">{this.renderPanel()}{!['workspace', 'details'].includes(this.panel) && <><rule />{this.button(this.panel === 'rename' ? 'Cancel · Esc' : 'Close · Esc', () => this.closePanel())}</>}</col>
       </overlay>}</col>,
     });
   }
@@ -680,7 +811,7 @@ export class NativeUI {
     return short.length > 52 ? '…/' + short.split('/').slice(-3).join('/') : short;
   }
 
-  private isPicker() { return ['history', 'models', 'effort', 'send-mode', 'menu'].includes(this.panel ?? ''); }
+  private isPicker() { return ['history', 'models', 'default-model', 'folders', 'effort', 'send-mode', 'menu'].includes(this.panel ?? ''); }
 
   private pickerItems(): PickerItem[] {
     const c = this.c;
@@ -690,6 +821,13 @@ export class NativeUI {
         detail: this.shortPath(t.cwd), icon: 'message', facts: { updated: new Date(t.updatedAt * 1000).toLocaleDateString('en-US') } })); break;
       case 'models': items = c.models.map(m => ({ id: m.model, label: m.displayName, detail: m.description,
         icon: 'model', badges: c.model === m.model ? [{ text: 'Current', tone: 'accent' }] : undefined })); break;
+      case 'default-model': items = [
+        { id: 'codex-default', label: 'Use Codex default', detail: 'Follow the model configured in Codex.', icon: 'settings',
+          badges: !c.newSessionModel ? [{ text: 'Default', tone: 'accent' }] : undefined },
+        ...c.models.filter(m => !m.hidden).map(m => ({ id: m.model, label: m.displayName, detail: m.description,
+          icon: 'model', badges: c.newSessionModel === m.model ? [{ text: 'Default', tone: 'accent' as const }] : undefined })),
+      ]; break;
+      case 'folders': items = this.folderBrowser.items; break;
       case 'effort': items = (c.models.find(m => m.model === c.model)?.supportedReasoningEfforts ?? []).map(o => ({
         id: o.reasoningEffort, label: o.reasoningEffort, detail: o.description, icon: 'brain',
         badges: c.effort === o.reasoningEffort ? [{ text: 'Current', tone: 'accent' }] : undefined })); break;
@@ -703,11 +841,14 @@ export class NativeUI {
         { id: 'workspace', label: 'Switch workspace', icon: 'folder' },
         { id: 'attach', label: 'Attach image', icon: 'image' },
         { id: 'models', label: 'Choose model', icon: 'model', detail: 'Ctrl+Shift+P' },
+        { id: 'default-model', label: 'New session model', icon: 'settings', detail: modelName(c, c.newSessionModel) },
         { id: 'effort', label: 'Reasoning effort', icon: 'brain' },
         ...(c.diff ? [{ id: 'diff', label: 'View changes', icon: 'diff' }] : []),
         { id: 'details', label: 'Session details', icon: 'info' },
         { id: 'notifications', label: c.notifications ? 'Turn off completion reminders' : 'Turn on completion reminders', icon: 'bell' },
         { id: 'editing', label: this.draft.vim ? 'Use standard editing' : 'Enable Vim editing', icon: 'keyboard' },
+        ...(this.reloadWindow ? [{ id: 'reload', label: 'Developer: Reload Window',
+          detail: 'Load the latest interface and keep tasks running.' }] : []),
         { id: 'help', label: 'Keyboard shortcuts', icon: 'keyboard' },
       ];
     }
@@ -717,14 +858,23 @@ export class NativeUI {
 
   private renderPicker() {
     const items = this.pickerItems();
+    const folders = this.panel === 'folders', defaults = this.panel === 'default-model';
+    const error = defaults ? this.preferenceError : folders ? this.folderBrowser.error : '';
     if (!items.some(i => i.id === this.pickerSelected)) this.pickerSelected = items[0]?.id ?? '';
-    return <picker key="panel" size="md" layout="rows" preview="none" title={this.panelTitle()} icon={this.panel === 'models' ? 'model' : this.panel === 'history' ? 'history' : 'search'}
+    return <picker key="panel" size="md" layout="rows" preview="none" title={this.panelTitle()}
+      subtitle={defaults ? 'Saved for new sessions in every workspace. Existing sessions keep their model.' : folders ? this.folderBrowser.directory : undefined}
+      icon={folders ? 'folder-open' : defaults || this.panel === 'models' ? 'model' : this.panel === 'history' ? 'history' : 'search'}
       query={this.dialogDraft.text} cursor={this.dialogDraft.cursor} placeholder="Type to filter…" focus="list"
-      items={items} selected={this.pickerSelected} empty="No matches" state={this.historyLoading && this.panel === 'history' ? 'loading' : 'ready'}
+      items={items} selected={this.pickerSelected} empty={folders ? 'No folders here' : 'No matches'}
+      state={(this.historyLoading && this.panel === 'history') || (folders && this.folderBrowser.loading) || (defaults && this.preferenceSaving) ? 'loading' : error ? 'error' : 'ready'}
+      message={error || undefined}
       current={this.panel === 'models' ? [this.c.model] : this.panel === 'effort' ? [this.c.effort]
-        : this.panel === 'send-mode' ? [this.sendMode] : this.panel === 'history' ? [this.c.thread?.id ?? ''] : []}
+        : defaults ? [this.c.newSessionModel ?? 'codex-default'] : this.panel === 'send-mode' ? [this.sendMode] : this.panel === 'history' ? [this.c.thread?.id ?? ''] : []}
       actions={[
-        { id: 'confirm', label: this.panel === 'history' ? 'Resume' : 'Select', keys: ['enter'], primary: true, disabled: items.length ? undefined : true },
+        { id: 'confirm', label: folders ? 'Open folder' : defaults ? 'Set default' : this.panel === 'history' ? 'Resume' : 'Select', keys: ['enter'], primary: !folders,
+          disabled: !items.length || (defaults && this.preferenceSaving) || (folders && this.folderBrowser.loading) || undefined },
+        ...(folders ? [{ id: 'use-folder', label: 'Use this folder', primary: true as const,
+          disabled: this.folderBrowser.loading || !!this.folderBrowser.error || undefined }] : []),
         ...(this.panel === 'history' ? [{ id: 'scope', label: this.allThreads ? 'All workspaces' : 'This workspace', on: this.allThreads },
           ...(this.c.threadsCursor ? [{ id: 'more', label: 'Load more' }] : [])] : []),
         { id: 'close', label: 'Close', keys: ['esc'], end: true },
@@ -732,6 +882,7 @@ export class NativeUI {
       onSelect={e => { this.pickerSelected = e.item; this.render(); }}
       onActivate={e => { this.pickerSelected = e.item; this.activatePicker(); }}
       onAction={{ confirm: () => this.activatePicker(), close: () => this.closePanel(),
+        'use-folder': () => this.useFolder(),
         scope: () => { this.allThreads = !this.allThreads; this.action(() => this.c.listThreads(this.allThreads)); },
         more: () => this.action(() => this.c.listThreads(this.allThreads, true)) }}
       onEdit={e => { this.dialogDraft.nativeEdit(e); this.render(); }}
@@ -742,11 +893,14 @@ export class NativeUI {
     const id = this.pickerSelected;
     if (!id) return;
     if (this.panel === 'history') this.action(async () => { this.closePanel(); await this.openSession(id); });
+    else if (this.panel === 'default-model') this.action(() => this.saveDefaultModel(id));
+    else if (this.panel === 'folders') { if (!this.folderBrowser.loading) this.action(() => this.readFolders(id)); }
     else if (this.panel === 'models') this.action(async () => { this.c.chooseModel(id); this.closePanel(); });
     else if (this.panel === 'effort') this.action(async () => { this.c.chooseEffort(id as ReasoningEffort); this.closePanel(); });
     else if (this.panel === 'send-mode' && (id === 'steer' || id === 'queue')) { this.sendMode = id; this.closePanel(); }
     else if (id === 'new') this.action(async () => { this.closePanel(); await this.newSession(); });
     else if (id === 'editing') { this.draft.setVim(!this.draft.vim); this.closePanel(); }
+    else if (id === 'reload') this.requestReload();
     else if (id === 'notifications') {
       this.c.setNotifications(!this.c.notifications); this.completion = undefined; this.closePanel();
     }
@@ -754,7 +908,7 @@ export class NativeUI {
   }
 
   private panelTitle() {
-    return ({ history: 'Sessions', models: 'Select model', effort: 'Reasoning effort', 'send-mode': 'Send while running', workspace: 'Workspace', attach: 'Attach image', rename: 'Rename session', details: 'Session details', help: 'Getting started', diff: 'Changes', menu: 'Actions' })[this.panel!];
+    return ({ history: 'Sessions', models: 'Select model', 'default-model': 'New session model', folders: 'Choose a folder', effort: 'Reasoning effort', 'send-mode': 'Send while running', workspace: 'New session in a workspace', attach: 'Attach image', rename: 'Rename session', details: 'Session details', help: 'Getting started', diff: 'Changes', menu: 'Actions' })[this.panel!];
   }
   private renderPanel() {
     const c = this.c;
@@ -769,30 +923,23 @@ export class NativeUI {
         {this.button(this.renaming?.saving ? 'Saving…' : 'Save name', () => { void this.confirmRename(); }, 'ct-primary',
           !!this.renaming?.saving || !this.dialogDraft.text.trim())}
       </>;
-      case 'workspace': case 'attach': return <>
-        <text tone="muted" text={this.panel === 'workspace' ? 'Start a new session in this directory. Codex keeps the current session.' : 'Enter the full path to an image to attach it to your next message.'} />
+      case 'workspace': return <WorkspaceForm c={c} draft={this.dialogDraft} path={this.workspacePath()}
+        error={this.workspaceError} opening={this.workspaceOpening}
+        edit={() => { this.workspaceError = ''; this.render(); }}
+        focus={() => { this.focused = 'layer.panel.body.field'; this.surface.focus(this.focused); }}
+        browse={() => this.action(() => this.browseFolders())} chooseDefault={() => this.openModelPicker('default-model')}
+        submit={() => this.action(() => this.confirmPath())} close={() => this.closePanel()} />;
+      case 'attach': return <>
+        <text tone="muted" text="Enter the full path to an image to attach it to your next message." />
         <input key="field" text={this.dialogDraft.text} cursor={this.dialogDraft.cursor} anchor={this.dialogDraft.anchor}
           placeholder="/full/path" onEdit={e => { this.dialogDraft.nativeEdit(e); this.render(); }}
           onUndo={() => { this.dialogDraft.undo(); this.render(); }} onFocus={() => { this.focused = 'layer.panel.body.field'; this.surface.focus(this.focused); }} />
-        {this.button(this.panel === 'workspace' ? 'New session' : 'Attach image', () => this.action(() => this.confirmPath()), 'ct-primary')}
+        {this.button('Attach image', () => this.action(() => this.confirmPath()), 'ct-primary')}
       </>;
-      case 'details': return <>
-        <kv items={[
-          { k: 'Codex × Tern', v: '0.1.0' },
-          { k: 'Tested Codex version', v: '0.162.1' }, { k: 'Active model', v: c.effective?.model ?? 'Unknown' },
-          { k: 'Reasoning effort', v: c.effective?.reasoningEffort ?? 'Default' },
-          { k: 'Sandbox', v: c.effective?.sandbox?.type ?? 'Loading' },
-          { k: 'Approval policy', v: JSON.stringify(c.effective?.approvalPolicy ?? null) },
-          { k: 'Reviewer', v: c.effective?.approvalsReviewer === 'auto_review' || c.effective?.approvalsReviewer === 'guardian_subagent'
-            ? 'Approve for me' : c.effective?.approvalsReviewer === 'user' ? 'Ask for approval' : 'Default' },
-          { k: 'Session', v: c.thread?.id ?? 'Not created' },
-          { k: 'Backend', v: c.rpc.options.binary ?? process.env.CODEX_BINARY ?? 'codex (PATH)' },
-        ]} />
-        {c.notices.filter(n => !n.error).map(n => <section key={`notice-${n.id}`} head="Codex notice" collapsible collapsed><text text={n.text} /></section>)}
-        <section head="Diagnostics" collapsible collapsed><code text={c.diagnostics.join('\n').slice(-12000)} lang="text" wrap /></section>
-      </>;
+      case 'details': return <SessionDetails c={c} chooseModel={() => this.openModelPicker('models')}
+        chooseEffort={() => this.openModelPicker('effort')} chooseDefault={() => this.openModelPicker('default-model')} close={() => this.closePanel()} />;
       case 'diff': return <diff text={c.diff} mode="unified" />;
-      case 'help': return <md text={`**Keyboard shortcuts**\n\n- Ctrl+A / Ctrl+E — Start / end of line\n- Ctrl+B / Ctrl+F — Move left / right\n- Ctrl+P / Ctrl+N — Move up / down\n- Option+Left / Right — Move by word\n- Ctrl+H / Ctrl+D — Delete backward / forward\n- Ctrl+U / Ctrl+K / Ctrl+W — Delete to line start / end / previous word\n- Ctrl+Y / Option+Y — Restore deleted text / cycle earlier deletions\n- Command+A — Select all\n- Command+Z / Command+Shift+Z — Undo / redo\n- Enter — Send message\n- Shift+Enter — New line\n- Command+, — Tern terminal settings\n- Tab — Complete file paths\n- Command+V — Paste text, files or images through Tern\n- Ctrl+V — Paste from the system clipboard\n- Ctrl+Shift+N — New session\n- Ctrl+L — Resume session\n- Ctrl+Shift+P — Select model\n- Ctrl+C — Stop the current turn; quit when idle\n- Ctrl+Q — Quit\n- Esc — Close a panel\n\nUse **New session** above the sidebar list to start a conversation in the current folder. Other sessions keep their tasks and drafts.\n\nWhile Codex is working, choose **Steer** to add input to the current turn, or **Queue** to save it for the next turn. A stop or error pauses the local queue.\n\nPaste an image to see a thumbnail before sending. Click it to preview; use × to remove it. Image file paths and **Attach image** in the actions menu also work. Copy a PDF or another document in Finder and paste it to insert a Markdown file link.\n\nThis prototype does not support complex MCP forms, secure input, voice, or desktop host tools.`} />;
+      case 'help': return <md text={`**Keyboard shortcuts**\n\n- Ctrl+A / Ctrl+E — Start / end of line\n- Ctrl+B / Ctrl+F — Move left / right\n- Ctrl+P / Ctrl+N — Move up / down\n- Option+Left / Right — Move by word\n- Ctrl+H / Ctrl+D — Delete backward / forward\n- Ctrl+U / Ctrl+K / Ctrl+W — Delete to line start / end / previous word\n- Ctrl+Y / Option+Y — Restore deleted text / cycle earlier deletions\n- Command+A — Select all\n- Command+Z / Command+Shift+Z — Undo / redo\n- Enter — Send message\n- Shift+Enter — New line\n- Command+, — Tern terminal settings\n- Tab — Complete file paths\n- Command+V — Paste text, files or images through Tern\n- Ctrl+V — Paste from the system clipboard\n- Ctrl+Shift+N — New session\n- Ctrl+L — Resume session\n- Ctrl+Shift+P — Select model\n- Ctrl+Shift+R — Reload window without stopping tasks\n- Ctrl+C — Stop the current turn; quit when idle\n- Ctrl+Q — Quit\n- Esc — Close a panel\n\nUse **New session** above the sidebar list to start a conversation in the current folder. Other sessions keep their tasks and drafts.\n\nWhile Codex is working, choose **Steer** to add input to the current turn, or **Queue** to save it for the next turn. A stop or error pauses the local queue.\n\nPaste an image to see a thumbnail before sending. Click it to preview; use × to remove it. Image file paths and **Attach image** in the actions menu also work. Copy a PDF or another document in Finder and paste it to insert a Markdown file link.\n\nThis prototype does not support complex MCP forms, secure input, voice, or desktop host tools.`} />;
       default: return null;
     }
   }
@@ -896,12 +1043,16 @@ export class NativeUI {
   }
 
   private async confirmPath() {
-    const path = resolve(this.c.cwd, this.dialogDraft.text.trim().replace(/^~(?=\/)/, process.env.HOME ?? '~'));
-    if (this.panel === 'workspace') await this.newSession(path);
-    else {
-      await this.attach(await loadImage(path));
-    }
-    this.closePanel();
+    const path = this.workspacePath();
+    if (this.panel !== 'workspace') { await this.attach(await loadImage(path)); this.closePanel(); return; }
+    if (this.workspaceOpening || !this.dialogDraft.text.trim()) return;
+    this.workspaceOpening = true; this.workspaceError = ''; this.render();
+    try {
+      if (!(await stat(path).catch(() => null))?.isDirectory()) throw new Error('Choose an existing folder.');
+      if (!await this.newSession(path)) throw new Error(this.folderSessions.error || 'Could not open this workspace. Try again.');
+      if (this.panel === 'workspace') this.closePanel();
+    } catch (error) { this.workspaceError = (error as Error).message; }
+    finally { this.workspaceOpening = false; this.render(); }
   }
 
   async send() {
@@ -919,10 +1070,14 @@ export class NativeUI {
     const composer = this.composer, threadId = this.c.thread?.id;
     const input = composer.take();
     // Clear optimistically for responsive typing, but restore rejected input intact.
-    this.render();
-    try { await this.c.submit(input.text, input.images, this.sendMode); input.draft.addHistory(text); }
+    this.syncComposer();
+    try {
+      const sending = this.c.submit(input.text, input.images, this.sendMode);
+      this.render();
+      await sending; input.draft.addHistory(text);
+    }
     catch (e) {
-      if (!(e instanceof RpcOutcomeUnknown) && !composer.restore(input)) this.c.preserveInput(threadId, input.text, input.images);
+      if (!isRpcOutcomeUnknown(e) && !composer.restore(input)) this.c.preserveInput(threadId, input.text, input.images);
       if (threadId) this.saveComposer(threadId, composer);
       this.c.sessionNotice(threadId, e instanceof Error ? e.message : String(e), true);
     }
@@ -934,8 +1089,9 @@ export class NativeUI {
     this.draft = this.savedDraft ?? new Draft(); this.savedDraft = null;
   }
 
-  private handleKey(key: Key): boolean {
+  handleKey(key: Key): boolean {
     if (key.ctrl && key.name === 'q') return false;
+    if (key.ctrl && key.shift && !key.meta && !key.alt && key.name === 'r') { this.requestReload(); return true; }
     if (this.pasting && !(key.ctrl && key.name === 'c')) { this.deferredKeys.push(key); return true; }
     if (key.ctrl && key.name === 'v') { this.action(() => this.pasteClipboard()); return true; }
     if (key.ctrl && key.name === 'c') {
@@ -978,57 +1134,17 @@ export class NativeUI {
     return true;
   }
 
-  async run() {
-    const disablePaste = () => this.enhanced?.disable();
-    process.once('exit', disablePaste);
-    this.enhanced?.enable();
-    this.render(); this.focusComposer();
-    try {
-      for await (const input of this.session) {
-        if (input.type === 'event') {
-          if (input.event.ev === 'error') this.c.notice(`Tern: ${input.event.msg}`, true);
-          if (input.event.ev === 'visible') {
-            this.visible = input.event.visible;
-            if (this.visible && this.c.thread) this.c.markRead(this.c.thread.id);
-          }
-          continue;
-        }
-        if (!this.handleKey(input.key)) break;
-      }
-    } finally {
-      disablePaste(); process.off('exit', disablePaste);
-      await this.close();
-    }
-  }
-
-  async close() {
-    this.syncComposer();
-    this.ended = true; this.folderSessions.dispose(); this.enhanced?.disable();
+  disposeForReload() {
+    this.ended = true; this.folderSessions.dispose();
     this.c.off('change', this.onChange);
     this.c.off('completion', this.onCompletion);
     if (this.completionTimer) clearTimeout(this.completionTimer);
     if (this.renderTimer) clearTimeout(this.renderTimer);
+  }
+
+  async close() {
+    this.syncComposer(); this.disposeForReload(); this.enhanced?.disable();
     await this.c.flushRecovery().catch(error => { process.stderr.write(`Draft recovery: ${error.message}\n`); });
     await this.session.close(); this.clipboardInput?.dispose();
   }
-}
-
-export async function createNativeUI(c: Controller) {
-  let ui: NativeUI | null = null;
-  const enhanced = new EnhancedPasteController({
-    write: data => process.stdout.write(data),
-    pasteText: text => ui?.pasteText(text),
-    pasteFiles: paths => ui?.pasteFiles(paths),
-    pasteImage: image => ui?.pasteBinary(Buffer.from(image.data, 'base64'), image.mimeType),
-    showStatus: message => c.notice(message, true),
-  });
-  const input = process.stdin.isTTY ? new ClipboardInput(process.stdin,
-    data => enhanced.handleInput(data), message => c.notice(message, true)) : undefined;
-  try {
-    const session = await connect({ app: 'codex-tern', version: '0.1.0', features: ['edit', 'undo', 'send'], exitHooks: true,
-      ...(input ? { input } : {}) });
-    if (!session) { input?.dispose(); return null; }
-    ui = new NativeUI(c, session, session.open({ mode: 'inline', title: 'Codex × Tern', role: 'codex-tern' }), enhanced, input);
-    return ui;
-  } catch (error) { input?.dispose(); throw error; }
 }

@@ -8,6 +8,10 @@ It opens directly in Tern, or launches Tern from another terminal. A repository 
 
 Each session keeps its own task, output, approvals, queue, model choices and draft. Start a task in one session, switch to another, and start another task. Both continue running. Stop affects the selected session.
 
+Choose **More actions → New session model** to save a default for new sessions in every workspace. The setting survives a client restart. **Use Codex default** restores the model from Codex configuration. Changing this setting leaves existing sessions and running tasks alone; changing a session's model in the composer does not change the saved default. Resuming or forking a session keeps that session's model settings.
+
+**Session details** shows the current model, reasoning effort, workspace and permissions. Session IDs, backend paths and diagnostics are under **Technical details**. Click the workspace name below the composer to choose a folder. The dialog shows its full path, supports **Browse**, and offers the saved new-session model. Invalid paths stay editable with an inline error.
+
 Click **Fork from here** below a completed reply to continue that conversation in a new session. The fork includes history through that reply, including when later replies already exist. It uses the same working directory and files; no Git worktree is created and no file changes are rolled back. The source keeps its later messages, task, queue and draft. The fork starts with an empty message box. **Open source** returns to the original session.
 
 While a task runs, open the **Steer / Queue** selector to choose how to send your next message. **Steer** adds input to the current turn; **Queue** waits for that turn to finish. Opening or dismissing the choices keeps the current mode and draft. With no text or images to send, the composer shows only **Stop**; adding content also shows **Send**.
@@ -34,7 +38,7 @@ Click **New session** above the sidebar list to start a conversation in the curr
 
 Drag the sidebar divider to choose its width. The proportion is saved globally in your Tern profile and shared by all projects and windows. New windows and reopened sidebars use that proportion, including after a restart. Resizing the whole window preserves your choice. Before your first adjustment, new sidebars use a comfortable default width.
 
-Right-click a session in the sidebar and choose **Delete session** to remove it from the list by moving it to Codex's archive. Running tasks, pending questions, queued messages and unsent drafts prevent deletion; choosing the action explains why it is unavailable. Deleting the selected session returns to an existing neighbour when available. Empty conversations stay out of history until their first message. These changes require the updated client: exit it with **Ctrl+Q**, then run `codex-tern` again. Reopening Tern alone keeps the old client process.
+Right-click a session in the sidebar and choose **Delete session** to remove it from the list by moving it to Codex's archive. Running tasks, pending questions, queued messages and unsent drafts prevent deletion; choosing the action explains why it is unavailable. Deleting the selected session returns to an existing neighbour when available. Empty conversations stay out of history until their first message.
 
 The same right-click menu has **Rename session**. Enter a name and press **Enter** or **Save name**; **Esc** cancels. You can rename a background or running session without switching to it. Saved names appear in both the sidebar and history picker and persist in Codex. A rejected name keeps the dialog open with the error and leaves the stored title unchanged.
 
@@ -42,19 +46,25 @@ Sessions sort by last conversation activity, newest first. Sending a message or 
 
 ## Updating the client
 
-After rebuilding, exit the old client with **Ctrl+Q**, then launch `codex-tern` again. Reopening the Tern window alone may restore the old process. Drafts made in older versions are not saved on exit, so copy those before upgrading. Keep the project client open while tasks run; local recovery does not keep an exited backend working. Codex saves the conversation history.
+After `bun run build`, choose **Developer: Reload Window** in **More actions**, or press **Ctrl+Shift+R**. This loads the latest interface and styles in the same pane. Running tasks, pending questions and selected answers, queues, session drafts, attachments and editor undo stay intact. A failed load keeps the previous interface available. If a paste, send or session action is in progress, finish that action before reloading; running model turns do not block reload.
+
+With the bundled plugin installed, Tern's command palette also has **Codex: Reload Window**. `codex-tern reload` invokes that command in the current Tern window. The command works when either the client or its sidebar has focus. Run `tern plugin reload` after updating the plugin itself.
+
+Clients started before window reload was added need one restart to gain the feature. Finish their tasks, press **Ctrl+Q**, then launch `codex-tern` once. Changes to the backend connection, controller, launcher or dependencies still need a client restart; window reload updates the interface. Keep the client open while tasks run, since local recovery cannot keep an exited backend working. Codex saves the conversation history.
 
 On macOS, local recovery files live in `~/Library/Application Support/codex-tern/recovery/`. `XDG_STATE_HOME` overrides the state root. Files are private to your user and scoped by project, Tern profile and Codex home. They contain draft text and attachment paths; keep the original images or their pasted-image cache available. Plain text mode keeps its existing in-memory behavior.
 
 ## Appearance
 
-Chat messages use Concourse T3 for Latin text and LXGW Neo XiHei (霞鹜新晰黑) for Chinese, at 17 px with a 29 px line height, 16 px between paragraphs, and a centered 736 px reading column. The input area and sidebar use the same font pair at smaller sizes. Install both font families locally for this appearance; other systems fall back to their available Chinese and UI fonts. Code keeps Tern's configured code font. The sidebar has single-line titles in 32 px rows separated by 2 px; update times appear on hover. After rebuilding, run `tern plugin reload` to apply the styles to existing clients with the bundled plugin installed. Without the plugin, exit and relaunch the client; reopening a Tern window restores its existing process.
+Chat messages use Concourse T3 for Latin text and LXGW Neo XiHei (霞鹜新晰黑) for Chinese, at 17 px with a 29 px line height, 16 px between paragraphs, and a centered 736 px reading column. The input area and sidebar use the same font pair at smaller sizes. Install both font families locally for this appearance; other systems fall back to their available Chinese and UI fonts. Code keeps Tern's configured code font. The sidebar has single-line titles in 32 px rows separated by 2 px; update times appear on hover. After rebuilding, use **Reload Window** to load the client styles. With the plugin installed, `tern plugin reload` also applies the shared styles to existing clients, including older clients.
 
 Choose **Islands** in Tern’s **Change interface style** for rounded cards and spacing.
 
 ## Files and writing
 
 Assistant `codex-file-citation` directives render as clickable local file links, including in restored conversations and streaming replies. File names can contain Chinese, spaces and punctuation. Code examples keep the literal directive.
+
+On macOS, right-click a local file link and choose **Show in Finder** to select that file in Finder. This also works for file links in sent messages. Normal clicks still open the file in Tern.
 
 Paper revision proposals show two full passages, with red deletions in the original above and green additions in the suggestion below. Check the edits you want and click **Apply selected edits** to draft a request for Codex. The client computes the differences and Tern renders the text and formulas. See [the proposal format and a short AGENTS.md instruction](proposals.md).
 

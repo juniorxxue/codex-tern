@@ -145,6 +145,24 @@ try {
   click('[data-role="omp.editor"] .sf-editor'); type('hold'); key('Enter');
   await wait(() => text('.ct-activity').includes('Working'), 'task after plugin reload');
   await wait(() => tree('[data-role="codex-tern.sessions.running"]').length === 1, 'sidebar polling restored after plugin reload');
+  type('Reload keeps this draft');
+  const wireGeneration = async () => Number([...(await readFile(resolve(out, 'client-wire.jsonl'), 'utf8'))
+    .matchAll(/uiGeneration\\":(\d+)/g)].at(-1)?.[1] ?? 0);
+  const beforeReload = await wireGeneration();
+  const rowsBeforeReload = tree('[data-role="codex-tern.sessions.item"]').map(n => n.title);
+  click('[data-role="codex-tern.sessions.folder"]');
+  ctl('plugins run plugin.codex-tern.reload');
+  const untilReload = Date.now() + 10000;
+  while (await wireGeneration() === beforeReload && Date.now() < untilReload) await pause(100);
+  assert.equal(await wireGeneration(), beforeReload + 1);
+  assert.ok(text('.sf-ed-text').includes('Reload keeps this draft'));
+  assert.ok(text('.ct-activity').includes('Working'));
+  assert.equal(tree('[data-role="codex-tern.sessions.running"]').length, 1);
+  assert.deepEqual(tree('[data-role="codex-tern.sessions.item"]').map(n => n.title), rowsBeforeReload);
+  assert.equal(ctl('state').panes.length, 2);
+  ctl('shot reloaded-from-sidebar');
+  click('[data-role="omp.editor"] .sf-editor'); key('Meta+a'); key('Backspace');
+  pass('Codex: Reload Window targets the client from its sidebar and preserves the running task, draft and session list');
   click('[data-role="omp.composer.stop"]');
   await wait(() => tree('[data-role="codex-tern.sessions.running"]').length === 0, 'sidebar observes completion after plugin reload');
   assert.equal(tree('[data-role="omp.composer.bar"] > .sf-place').length, 0, 'host title cannot overlap model controls');

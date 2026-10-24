@@ -12,7 +12,10 @@ import type { ReasoningEffort } from './generated/ReasoningEffort';
 import type { UserInput } from './generated/v2/UserInput';
 import type { Turn } from './generated/v2/Turn';
 
-export interface DisplayItem { id: string; turnId: string; item: ThreadItem; done: boolean }
+export interface DisplayItem {
+  id: string; turnId: string; item: ThreadItem; done: boolean;
+  delivery?: 'sending' | 'accepted';
+}
 export interface PendingRequest { id: RpcId; method: string; params: any; answers: Record<string, string[]> }
 export interface QueuedInput { id: string; text: string; images: string[] }
 export interface Notice { id: number; text: string; error: boolean }
@@ -186,10 +189,11 @@ export class Conversation extends EventEmitter {
     const current = new Map(this.items.map(i => [i.id, i]));
     const loaded = new Set(old.map(i => i.id));
     this.items = [...old.map(snapshot => {
-      const live = current.get(snapshot.id);
+      const live = current.get(snapshot.id) ?? this.pendingMessage(snapshot.turnId, snapshot.item);
       if (!live) return snapshot;
-      if (this.partialItems.delete(snapshot.id) || (!live.done && snapshot.done)) {
-        live.item = snapshot.item; live.done = snapshot.done;
+      if (live.delivery || this.partialItems.delete(snapshot.id) || (!live.done && snapshot.done)) {
+        live.id = snapshot.id; live.item = snapshot.item; live.done = snapshot.done;
+        delete live.delivery;
       }
       return live;
     }), ...this.items.filter(i => !loaded.has(i.id))];
@@ -218,9 +222,16 @@ export class Conversation extends EventEmitter {
       ...images.map(path => ({ type: 'localImage' as const, path })),
     ];
     const threadId = this.thread.id;
+    const firstInput = !this.thread.name?.trim() && !this.thread.preview?.trim()
+      && !this.thread.forkedFromId && this.turns.size === 0 && this.items.length === 0;
     const turnId = this.activeTurn;
     const outgoing = { id: queuedId ?? randomUUID(), text, images: [...images] };
-    this.operation = turnId ? 'Steering…' : 'Sending…'; this.changed();
+    const pending: DisplayItem | undefined = turnId ? {
+      id: `${turnId}:local:${outgoing.id}`, turnId, done: false, delivery: 'sending',
+      item: { id: outgoing.id, type: 'userMessage', clientId: outgoing.id, content: input },
+    } : undefined;
+    if (pending) this.items.push(pending);
+    this.operation = turnId ? 'Steering…' : 'Sending…';
     try {
       this.inflight = outgoing; this.changed();
       if (this.checkpoint) for (const path of images) {
@@ -229,7 +240,11 @@ export class Conversation extends EventEmitter {
       if (this.checkpoint) await this.checkpoint();
       if (this.connection !== 'ready') throw new Error('Codex disconnected before this message was sent.');
       if (turnId) {
-        await this.rpc.request('turn/steer', { threadId, expectedTurnId: turnId, input });
+        await this.rpc.request('turn/steer', { threadId, expectedTurnId: turnId,
+          clientUserMessageId: outgoing.id, input });
+        // A successful RPC can precede the user-message event by a long time.
+        // An event received first must not become pending again after the reply.
+        if (pending?.delivery) pending.delivery = 'accepted';
       } else {
         const result = await this.rpc.request('turn/start', { threadId, input,
           ...(this.modelOverride ? { model: this.modelOverride } : {}),
@@ -242,7 +257,9 @@ export class Conversation extends EventEmitter {
       // A new conversation belongs in history only after its first accepted input.
       if (this.thread && !this.thread.preview?.trim()) this.thread.preview = text.trim() || (images.length ? 'Image' : '');
       this.activity();
+      if (firstInput && text.trim()) this.emit('firstInput', text);
     } catch (e) {
+      if (pending?.delivery) this.items = this.items.filter(i => i !== pending);
       this.queuePaused = true;
       if (e instanceof RpcOutcomeUnknown) this.unconfirmed.push(outgoing);
       throw e;
@@ -323,13 +340,20 @@ export class Conversation extends EventEmitter {
     this.changed();
   }
 
+  private pendingMessage(turnId: string, item: ThreadItem) {
+    if (item.type !== 'userMessage' || !item.clientId) return;
+    // Match the backend's client ID, never text: identical steers are distinct.
+    return this.items.find(i => i.delivery && i.turnId === turnId
+      && i.item.type === 'userMessage' && i.item.clientId === item.clientId);
+  }
+
   private upsert(turnId: string, item: ThreadItem, done: boolean) {
     const id = `${turnId}:${item.id}`;
-    const existing = this.items.find(i => i.id === id);
+    const existing = this.items.find(i => i.id === id) ?? this.pendingMessage(turnId, item);
     if (!done && (existing?.done || this.endedTurns.has(turnId))) return;
     this.partialItems.delete(id);
     this.itemVersions.set(id, (this.itemVersions.get(id) ?? 0) + 1);
-    if (existing) { existing.item = item; existing.done = done; }
+    if (existing) { existing.id = id; existing.item = item; existing.done = done; delete existing.delivery; }
     else this.items.push({ id, turnId, item, done });
   }
 

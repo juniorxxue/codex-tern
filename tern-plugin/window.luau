@@ -36,7 +36,7 @@ local function send(cx, target, act, value)
   return true
 end
 
-local function view(snapshot, selection)
+local function view(snapshot, selection, reveals)
   local rows = {}
   local current = if selection then selection.id else snapshot.current
   local folder = string.match(snapshot.cwd or "", "([^/]+)/*$") or snapshot.cwd or "Sessions"
@@ -49,9 +49,15 @@ local function view(snapshot, selection)
     }})
   for _, item in snapshot.rows do
     local locked = item.locked and item.id ~= snapshot.current
+    local reveal = reveals and item.titleRevision and reveals[item.id] == item.titleRevision
     local title = {k = "row", p = {key = "heading", align = "center", gap = "sm"}, c = {
-      {k = "text", p = {key = "title", role = "codex-tern.sessions.title", text = item.title,
-        title = item.title .. "\n" .. item.time, lines = 1, grow = 1}},
+      {k = "col", p = {key = "title", role = "codex-tern.sessions.title",
+        title = item.title .. "\n" .. item.time, grow = 1}, c = {
+        {k = "col", p = {key = if reveal then "reveal:" .. item.titleRevision else "label",
+          role = "codex-tern.sessions.reveal", mark = if reveal then "reveal" else nil}, c = {
+          {k = "text", p = {key = "text", role = "codex-tern.sessions.label", text = item.title, lines = 1}},
+        }},
+      }},
     }}
     if locked then
       table.insert(title.c, {k = "icon", p = {key = "status", name = "lock", role = "codex-tern.sessions.lock", title = "Open in another client"}})
@@ -88,7 +94,19 @@ local function view(snapshot, selection)
 end
 
 local function paint(cx, pane, entry, snapshot)
-  local next_view = view(snapshot, entry.selection)
+  local versions, reveals = {}, {}
+  for _, item in snapshot.rows do
+    versions[item.id] = item.titleRevision or ""
+    -- Opening or restoring a panel establishes a baseline without replaying effects.
+    local previous = entry.title_versions and entry.title_versions[item.id]
+    if previous ~= nil and item.titleRevision
+      and (previous ~= item.titleRevision or (entry.title_reveals and entry.title_reveals[item.id] == item.titleRevision)) then
+      reveals[item.id] = item.titleRevision
+    end
+  end
+  entry.title_versions = versions
+  entry.title_reveals = reveals
+  local next_view = view(snapshot, entry.selection, reveals)
   local previous = entry.view
   local same_order = previous ~= nil and #previous.c == #next_view.c
   if same_order then
@@ -130,6 +148,8 @@ local function update(cx, pane, entry)
       -- an identical snapshot. The next live frame must rebuild that list.
       entry.view = nil
       entry.selection = nil
+      entry.title_versions = nil
+      entry.title_reveals = nil
     end
     return
   end
@@ -237,6 +257,26 @@ tern.command({id = "sessions", title = "Codex: Sessions", icon = "history", run 
     end
   end
   if not requested then open(cx) end
+end})
+
+tern.command({id = "reload", title = "Codex: Reload Window", icon = "app-codex", run = function(cx)
+  remember(cx)
+  local focused = cx.session:focused()
+  local target = if focused and panels[focused] then panels[focused].target else focused
+  local tab = if focused then cx.session:tab_of(focused) else nil
+  if not target or not bridge(cx, target) then
+    target = nil
+    for _, pane in cx.session:panes() do
+      if pane.tab == tab and bridge(cx, pane.pane) then target = pane.pane; break end
+    end
+  end
+  if not target then cx:toast("info", "Open Codex × Tern in this tab first."); return end
+  local state = bridge(cx, target)
+  if state.snapshot.reloadProtocol ~= 1 then
+    cx:toast("info", "This client needs one restart to enable window reload. Finish its tasks, then exit with Ctrl+Q and run codex-tern again.")
+    return
+  end
+  send(cx, target, "reload")
 end})
 
 tern.on("canvas_action", function(ev, cx)

@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { FileLock } from '@oh-my-pi/pi-natives';
 import { join } from 'node:path';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { proposalReply } from './proposals.mjs';
 const send = m => process.stdout.write(JSON.stringify(m) + '\n');
 const notify = (method, params) => send({ method, params });
@@ -28,6 +28,7 @@ if (process.env.QA_SESSION_FIXTURES) {
     preview: '', updatedAt: 1792558800, turns: [] });
 }
 let seq = 0;
+let backgroundOnly = false;
 const historyFile = process.env.QA_HISTORY_FILE;
 if (historyFile && existsSync(historyFile)) {
   const history = JSON.parse(readFileSync(historyFile, 'utf8'));
@@ -39,7 +40,7 @@ if (historyFile && existsSync(historyFile)) {
   }
 }
 function persist() {
-  if (historyFile) writeFileSync(historyFile, JSON.stringify({ seq, threads: [...threads.values()] }));
+  if (historyFile && !backgroundOnly) writeFileSync(historyFile, JSON.stringify({ seq, threads: [...threads.values()] }));
 }
 const contexts = new Map(), pending = new Map();
 const local = new AsyncLocalStorage();
@@ -53,7 +54,7 @@ function acquire(id) {
 const model = id => ({ id, model: id, displayName: id === 'qa-model' ? 'QA Model' : 'Other Model',
   description: 'UI test fixture', isDefault: id === 'qa-model', hidden: false,
   supportedReasoningEfforts: ['low', 'high'].map(reasoningEffort => ({ reasoningEffort, description: reasoningEffort })), defaultReasoningEffort: 'high' });
-const settings = thread => ({ thread, cwd: thread.cwd, model: 'qa-model', reasoningEffort: 'high',
+const settings = thread => ({ thread, cwd: thread.cwd, model: thread.model ?? 'qa-model', reasoningEffort: 'high',
   approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandbox: { type: 'workspaceWrite' } });
 const event = (method, extra) => {
   const { current, turn } = local.getStore();
@@ -79,6 +80,9 @@ function finish(text, status = 'completed') {
 }
 createInterface({ input: process.stdin }).on('line', line => {
   const m = JSON.parse(line);
+  if (process.env.QA_RPC_LOG) appendFileSync(process.env.QA_RPC_LOG,
+    JSON.stringify({ pid: process.pid, method: m.method ?? 'response', threadId: m.params?.threadId,
+      ephemeral: m.params?.ephemeral, name: m.params?.name }) + '\n');
   const reply = result => send({ id: m.id, result });
   if (!m.method) {
     const context = pending.get(m.id);
@@ -96,13 +100,20 @@ createInterface({ input: process.stdin }).on('line', line => {
     case 'initialized': break;
     case 'account/read': reply({ account: { type: 'test' } }); break;
     case 'model/list': reply({ data: [model('qa-model'), model('other-model')], nextCursor: null }); break;
+    case 'config/read': reply({ config: {}, origins: {}, layers: null }); break;
     case 'thread/start': {
+      if (m.params.ephemeral && !process.env.QA_GENERATED_TITLE) {
+        send({ id: m.id, error: { code: -32000, message: 'Title generation is not enabled in this fixture' } }); break;
+      }
+      if (m.params.ephemeral) backgroundOnly = true;
       const empty = m.params.cwd === process.env.QA_EMPTY_SESSION_CWD;
-      current = { id: `qa-thread-${++seq}`, cwd: m.params.cwd, preview: empty ? '' : 'QA session', name: empty ? null : `QA session ${seq}`,
+      current = { id: backgroundOnly ? `qa-title-${process.pid}` : `qa-thread-${++seq}`, ephemeral: backgroundOnly,
+        cwd: m.params.cwd, model: m.params.model ?? 'qa-model', preview: empty ? '' : 'QA session', name: empty ? null : `QA session ${seq}`,
         createdAt: Date.now() / 1000, updatedAt: Date.now() / 1000, recencyAt: Date.now() / 1000, turns: [] };
       context.current = current; contexts.set(current.id, context);
-      acquire(current.id);
+      if (!backgroundOnly) acquire(current.id);
       threads.set(current.id, current); persist(); reply(settings(current));
+      notify('thread/started', { thread: { ...current, turns: [] } });
       notify('warning', { message: 'QA configuration notice' }); break;
     }
     case 'thread/fork': {
@@ -130,7 +141,7 @@ createInterface({ input: process.stdin }).on('line', line => {
     }
     case 'thread/list': {
       const activity = t => m.params.sortKey === 'recency_at' ? t.recencyAt ?? t.updatedAt : t.updatedAt;
-      const rows = [...threads.values()].reverse().filter(t => !t.archived && (!m.params.cwd || t.cwd === m.params.cwd))
+      const rows = [...threads.values()].reverse().filter(t => !t.ephemeral && !t.archived && (!m.params.cwd || t.cwd === m.params.cwd))
         .sort((a, b) => activity(b) - activity(a));
       const at = Number(m.params.cursor ?? 0), limit = Math.min(m.params.limit ?? 30, process.env.QA_SESSION_FIXTURES ? 4 : 30);
       reply({ data: rows.slice(at, at + limit), nextCursor: at + limit < rows.length ? String(at + limit) : null }); break;
@@ -162,6 +173,8 @@ createInterface({ input: process.stdin }).on('line', line => {
       else reply(settings(current));
       break;
     case 'thread/turns/list': reply({ data: [...current.turns].reverse(), nextCursor: null }); break;
+    case 'thread/read': reply({ thread: threads.get(m.params.threadId) }); break;
+    case 'thread/unsubscribe': reply({}); notify('thread/closed', { threadId: m.params.threadId }); break;
     case 'turn/start': {
       const text = m.params.input.filter(i => i.type === 'text').map(i => i.text).join('');
       if (text.includes('QA_DELAYED_REJECT')) {
@@ -180,6 +193,15 @@ createInterface({ input: process.stdin }).on('line', line => {
       reply(text.includes('QA_UNCONFIRMED') ? { turn: null } : { turn });
       event('turn/started', { turn });
       add({ id: `user-${turn.id}`, type: 'userMessage', content: m.params.input });
+      if (current.ephemeral) {
+        const done = () => finish(JSON.stringify({ title: process.env.QA_GENERATED_TITLE ?? '自动命名会话' }));
+        if (process.env.QA_TITLE_RELEASE_FILE) {
+          const interval = setInterval(() => {
+            if (existsSync(process.env.QA_TITLE_RELEASE_FILE)) { clearInterval(interval); done(); }
+          }, 25);
+        } else setTimeout(done, 500);
+        break;
+      }
       if (text.includes('disconnect')) { setTimeout(() => process.exit(9), 30); break; }
       if (text.includes('approval') || text.includes('question')) {
         const requestId = ++seq + 1000; pending.set(requestId, context);
@@ -201,6 +223,11 @@ createInterface({ input: process.stdin }).on('line', line => {
         const citation = ':codex-file-citation{path="' + process.cwd() + '/.prototype/ui-qa/中文 [draft] (1) #?& 100%.txt" purpose="output"}';
         add({ id: `answer-${turn.id}`, type: 'agentMessage', phase: 'final_answer', text: 'Read ' + citation.slice(0, -5) }, false);
         setTimeout(() => finish('Read ' + citation + '\n\nExample: `' + citation + '`'), 100);
+      } else if (text.includes('QA_FILE_LINKS_FIXTURE')) {
+        finish('[First](./README.md) and **[Second](./.prototype/ui-qa/second.txt:2:1)**; [web](https://example.com).');
+      } else if (text.includes('QA_CONTINUING_TURN')) {
+        add({ id: `command-${turn.id}`, type: 'commandExecution', command: 'echo ready', status: 'completed', exitCode: 0 });
+        add({ id: `interim-${turn.id}`, type: 'agentMessage', phase: 'final_answer', text: 'QA_INTERIM_ANSWER: Should I change the core rules too?' });
       } else if (text.includes('hold')) {
         add({ id: `comment-${turn.id}`, type: 'agentMessage', phase: 'commentary', text: 'Checking the project…' });
         add({ id: `command-${turn.id}`, type: 'commandExecution', command: 'printf QA_OUTPUT', cwd: process.cwd(), status: 'inProgress',
@@ -209,7 +236,22 @@ createInterface({ input: process.stdin }).on('line', line => {
         : `QA_REPLY: ${text}\n\nQA_INPUT_BASE64: ${Buffer.from(text).toString('base64')}`), 50);
       break;
     }
-    case 'turn/steer': reply({ turnId: turn.id }); add({ id: `steer-${++seq}`, type: 'userMessage', content: m.params.input }); finish('QA_STEERED'); break;
+    case 'turn/steer': {
+      reply({ turnId: turn.id });
+      if (m.params.input.some(i => i.type === 'text' && i.text.includes('QA_DELAYED_STEER'))) {
+        setTimeout(() => {
+          add({ id: `steer-${++seq}`, type: 'userMessage', clientId: m.params.clientUserMessageId, content: m.params.input });
+          finish('QA_STEERED');
+        }, 1500);
+        break;
+      }
+      add({ id: `steer-${++seq}`, type: 'userMessage', clientId: m.params.clientUserMessageId, content: m.params.input });
+      if (turn.items.some(i => i.id === `interim-${turn.id}`)
+        && !m.params.input.some(i => i.type === 'text' && i.text.includes('QA_FINISH_CONTINUING'))) {
+        add({ id: `reasoning-${turn.id}`, type: 'reasoning', summary: [], content: [] }, false);
+      } else finish('QA_STEERED');
+      break;
+    }
     case 'turn/interrupt': reply({}); finish('', 'interrupted'); break;
     default: reply({});
   }

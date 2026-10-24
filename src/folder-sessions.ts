@@ -6,6 +6,7 @@ import { probeWriterLocks, type LockProbe } from './session-locks';
 export interface FolderSession {
   id: string;
   title: string;
+  titleRevision?: string;
   updatedAt: number;
   time: string;
   locked: boolean;
@@ -85,9 +86,10 @@ export class FolderSessions {
 
   get snapshot() {
     const current = this.c.thread;
-    const rows: FolderSession[] = this.threads.filter(t => !this.c.isArchived(t.id)
+    const rows: FolderSession[] = this.threads.filter(t => !t.ephemeral && !this.c.isArchived(t.id)
       && (t.name?.trim() || t.preview?.trim() || this.c.sessionHasContent(t.id))).map(t => ({
       id: t.id, title: (t.name || t.preview || 'New session').replace(/\s+/g, ' ').slice(0, 240),
+      titleRevision: this.c.sessionTitleRevision(t.id),
       updatedAt: t.updatedAt,
       time: activityAt(t) ? this.timeFormat.format(new Date(activityAt(t) * 1000)) : '',
       locked: this.isLocked(t.id),
@@ -164,7 +166,7 @@ export class FolderSessions {
             ...(cursor ? { cursor } : {}),
           });
           if (this.disposed || generation !== this.generation) return;
-          rows.push(...page.data.filter((t: Thread) => !this.c.isArchived(t.id) && resolve(t.cwd) === resolve(cwd)));
+          rows.push(...page.data.filter((t: Thread) => !t.ephemeral && !this.c.isArchived(t.id) && resolve(t.cwd) === resolve(cwd)));
           cursor = page.nextCursor ?? null; count++;
         } while (cursor && count < pages);
         const incoming = new Map(rows.map(t => [t.id, t]));
@@ -194,4 +196,12 @@ export class FolderSessions {
   }
 
   dispose() { this.disposed = true; this.generation++; this.c.off('change', this.observe); }
+
+  reloadState() {
+    return { cwd: this.cwd, threads: this.threads, cursor: this.cursor, pages: this.pages,
+      visible: this.visible, locked: this.locked, conflicts: this.conflicts, error: this.error };
+  }
+  restoreReloadState(state: ReturnType<FolderSessions['reloadState']>) {
+    Object.assign(this, state);
+  }
 }

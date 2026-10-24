@@ -68,6 +68,11 @@ test('session commands do not start Codex, register the bundled plugin and prese
   assert.deepEqual(JSON.parse(await readFile(f.log, 'utf8')).args, ['ctl', 'plugins run plugin.codex-tern.sessions']);
   assert.equal(parseOptions(['--', 'sessions']).prompt, 'sessions');
   assert.equal(parseOptions(['--', 'setup']).command, undefined);
+  const reloaded = await f.run(['reload'], { CODEX_BINARY: '/missing/codex', QA_TERN_CTL_OK: '1' });
+  assert.equal(reloaded.code, 0, reloaded.output);
+  assert.deepEqual(JSON.parse(await readFile(f.log, 'utf8')).args, ['ctl', 'plugins run plugin.codex-tern.reload']);
+  assert.equal(parseOptions(['--', 'reload']).prompt, 'reload');
+  assert.throws(() => parseOptions(['reload', 'extra']), /Usage/);
   assert.throws(() => parseOptions(['sessions', 'extra']), /Usage/);
 });
 

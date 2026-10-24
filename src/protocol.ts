@@ -3,6 +3,7 @@ import type { ClientRequest } from './generated/ClientRequest';
 import type { InitializeResponse } from './generated/InitializeResponse';
 import type { GetAccountResponse } from './generated/v2/GetAccountResponse';
 import type { ModelListResponse } from './generated/v2/ModelListResponse';
+import type { ConfigReadResponse } from './generated/v2/ConfigReadResponse';
 import type { ThreadStartResponse } from './generated/v2/ThreadStartResponse';
 import type { ThreadResumeResponse } from './generated/v2/ThreadResumeResponse';
 import type { ThreadReadResponse } from './generated/v2/ThreadReadResponse';
@@ -21,6 +22,7 @@ interface Responses {
   initialize: InitializeResponse;
   'account/read': GetAccountResponse;
   'model/list': ModelListResponse;
+  'config/read': ConfigReadResponse;
   'thread/start': ThreadStartResponse;
   'thread/resume': ThreadResumeResponse;
   'thread/read': ThreadReadResponse;
