@@ -195,7 +195,8 @@ try {
   click(row('Saved session 6'));
   await wait(() => text('[data-role="omp.assistant"]').includes('QA_SAVED_HISTORY_6'), 'released session opens');
   click(row('QA session 1'));
-  await wait(() => text(selected).includes('QA session 1'), 'return to original session');
+  await wait(() => text(selected).includes('QA session 1')
+    && !text('[data-role="omp.assistant"]').includes('QA_SAVED_HISTORY_6'), 'return to original session');
   pass('occupied sessions show a lock, ignore clicks without errors, and unlock after release');
 
   click('[data-role="omp.editor"] .sf-editor');
@@ -336,7 +337,7 @@ try {
   await wait(() => text('.sf-ed-text').includes('partial answer'), 'partial answer entered');
   click(row('Saved session 7'));
   await wait(() => text(selected).includes('Saved session 7'), 'switch while drafting an answer');
-  assert.ok(text('.sf-ed-text').includes('draft belongs to the second session'));
+  await wait(() => text('.sf-ed-text').includes('draft belongs to the second session'), 'destination draft restored after navigation');
   await wait(() => tree(`${row('QA session 1')} [data-role="codex-tern.sessions.waiting"]`).length === 1, 'waiting indicator');
   click(row('QA session 1'));
   await wait(() => text('.sf-ed-text').includes('partial answer'), 'question answer draft retained');
@@ -407,7 +408,7 @@ try {
   // The disabled-delete explanation can cover the footer until its toast ends.
   ctl('wait 6000');
   click('[data-role="omp.status.path"]');
-  await wait(() => text('.sf-layer').includes('Start a new session'), 'workspace dialog');
+  await wait(() => tree('[data-role="ct.dialog.workspace"]').length === 1, 'workspace dialog');
   key('Meta+a'); type(resolve(root, 'test/fixtures')); key('Enter');
   await wait(() => text('[data-role="omp.status.path"]').includes('fixtures'), 'new workspace');
   await wait(() => text('[data-role="codex-tern.sessions.folder"]').includes('fixtures'), 'panel follows workspace');

@@ -1,5 +1,5 @@
 /** @jsxImportSource @stencil-hq/tern */
-import { css, html, type Session, type Surface, type PickerItem, type Key } from '@stencil-hq/tern';
+import { css, html, Node, type Session, type Surface, type PickerItem, type Key } from '@stencil-hq/tern';
 import { basename, dirname, join, resolve } from 'node:path';
 import { readdir, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -29,6 +29,7 @@ import { assistantParts } from './proposals';
 import { ProposalView } from './proposal-view';
 import { runPluginCommand } from './tern-plugin';
 import { SessionDetails, WorkspaceForm, modelName } from './session-panels';
+import { ReadingPositions, readingAnchorClass } from './reading-position';
 
 const styles = css`
   .ct-buttons { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -95,6 +96,9 @@ export class NativeUI {
   private sessionDrafts = new Map<string, { composer: Composer;
     answerTarget: NativeUI['answerTarget']; savedDraft: Draft | null }>();
   private pendingSession?: string;
+  private navigating = false;
+  private readingPositions = new ReadingPositions(() => this.render(),
+    () => `ct.transcript.${this.clientInstance}`, id => this.surface.reveal(id, 'start'), () => this.session.caps.cell.h);
   private sidebarNavigation?: { request: string; target: string; pending: boolean };
   openProject?: (cwd: string, resume?: string) => Promise<boolean>;
   private readonly projectDirectory: string;
@@ -114,8 +118,9 @@ export class NativeUI {
     this.projectDirectory = c.cwd;
     this.folderSessions = new FolderSessions(c, () => this.schedule());
     if (state) {
-      const { folder, ...saved } = state;
+      const { folder, reading, ...saved } = state;
       Object.assign(this, saved);
+      for (const [id, position] of reading ?? []) this.readingPositions.saved.set(id, position);
       this.folderSessions.restoreReloadState(folder);
     }
     c.on('change', this.onChange);
@@ -129,7 +134,7 @@ export class NativeUI {
 
   assertReloadable() {
     if (this.ended) throw new Error('This window is closed.');
-    if (this.pasting || this.pendingActions || this.c.operation || this.c.selecting
+    if (this.pasting || this.pendingActions || this.c.operation || this.c.selecting || this.navigating
       || this.renaming?.saving || this.historyLoading || this.sidebarRequested)
       throw new Error('Wait for the current input or session action to finish, then reload the window.');
   }
@@ -143,7 +148,8 @@ export class NativeUI {
       pickerReturn: this.pickerReturn, folderBrowser: this.folderBrowser, workspaceError: this.workspaceError,
       focused: this.focused, visible: this.visible, sendMode: this.sendMode,
       activityModes: this.activityModes, proposalSelections: this.proposalSelections, proposalDrafts: this.proposalDrafts,
-      previews: this.previews, failedPreviews: this.failedPreviews, folder: this.folderSessions.reloadState() };
+      previews: this.previews, failedPreviews: this.failedPreviews, folder: this.folderSessions.reloadState(),
+      reading: this.readingPositions.saved };
   }
 
   private requestReload() {
@@ -241,7 +247,9 @@ export class NativeUI {
     const rows = this.folderSessions.snapshot.rows;
     const at = rows.findIndex(row => row.id === id);
     const replacement = [...rows.slice(at + 1), ...rows.slice(0, at).reverse()].find(row => !row.locked)?.id;
-    if (await this.navigate(() => this.c.archiveThread(id, replacement))) this.sessionDrafts.delete(id);
+    if (await this.navigate(() => this.c.archiveThread(id, replacement))) {
+      this.sessionDrafts.delete(id); this.readingPositions.saved.delete(id);
+    }
   }
   private openRenameSession(id?: string) {
     const thread = id ? this.folderSessions.get(id) : undefined;
@@ -276,7 +284,7 @@ export class NativeUI {
       } catch { return; }
     }
     if (request) this.sidebarNavigation = { request, target: id!, pending: true };
-    if (id && this.folderSessions.contains(id) && this.c.selecting) {
+    if (id && this.folderSessions.contains(id) && (this.c.selecting || this.navigating)) {
       this.pendingSession = value; this.schedule(); return;
     }
     try {
@@ -313,9 +321,16 @@ export class NativeUI {
   }
 
   private async navigate(change: () => Promise<void>, id?: string, reportError = false): Promise<boolean> {
+    if (this.navigating) return false;
+    this.navigating = true;
     this.syncComposer();
     this.folderSessions.clearError();
-    try { await change(); return true; }
+    const previous = this.c.thread?.id;
+    try {
+      await this.readingPositions.capture(previous);
+      if (this.ended) return false;
+      await change(); return true;
+    }
     catch (error) {
       if (id && sessionInUse(error)) this.folderSessions.markLocked(id);
       else {
@@ -328,6 +343,8 @@ export class NativeUI {
     finally {
       this.syncComposer();
       this.render(); this.focusComposer();
+      if (this.c.thread?.id !== previous) await this.readingPositions.restore(this.c.thread?.id);
+      this.navigating = false;
       if (this.pendingSession) {
         const next = this.pendingSession; this.pendingSession = undefined;
         void this.resumeFromSidebar(next);
@@ -655,9 +672,8 @@ export class NativeUI {
     const latestActivity = parts.findLast(p => p.kind === 'activity' && p.turnId === c.activeTurn);
     const awaitingActivity = c.activeTurn && !c.requests.length && !parts.some(p => p.kind === 'activity'
       ? p.turnId === c.activeTurn : p.entry.turnId === c.activeTurn && p.entry.item.type === 'agentMessage');
-    this.surface.render({
-      // Messages remain direct children for Tern's native conversation layout.
-      main: <col>
+    // Each message stays in its own direct block for native virtualization.
+    let main = <col role={`ct.transcript.${this.clientInstance}`}>
         {c.thread?.forkedFromId && <row key="origin" role="ct.fork.origin" gap="sm" align="center" wrap>
           <icon name="branch" /><text tone="muted" text="Forked conversation" />
           <html.button class="ct-reply-action" aria="Open source session" attrs={{ 'aria-disabled': c.selecting || !!this.panel }}
@@ -677,15 +693,21 @@ export class NativeUI {
         {c.notices.filter(n => n.error).map(n => <card key={`notice${n.id}`} role="omp.error" tone="error" head="Error">
           <text text={n.text} />{this.button('Dismiss', () => { c.notices = c.notices.filter(x => x.id !== n.id); c.changed(); })}
         </card>)}
-      </col>,
+      </col> as Node;
+    this.readingPositions.nodes = main.children.map((node, i) => `main.${node.props.key ?? i}`);
+    main = new Node(main.kind, main.props, main.children.map((node, i) =>
+      html.div({ key: String(node.props.key ?? i), class: readingAnchorClass(this.readingPositions.nodes[i]!) }, node)));
+    this.surface.render({ main,
       dock: <col>
         <text key="sessions" hidden title={JSON.stringify({ ...this.folderSessions.snapshot, cols: this.session.caps.cols,
           sidebarRequest: this.sidebarRequested ? this.clientInstance : undefined,
+          readingRequest: this.readingPositions.request,
           cellWidth: this.session.caps.cell.w,
           rows: this.folderSessions.snapshot.rows.map(row => ({ ...row, canArchive: row.canArchive && !this.hasSessionDraft(row.id) })),
           archiveProtocol: 1, renameProtocol: 1, navigationProtocol: 1, newSessionProtocol: 1,
           reloadProtocol: this.reloadWindow ? 1 : undefined, uiGeneration: this.generation, navigation: this.sidebarNavigation })}
           onAction={{ refresh: () => { void this.folderSessions.refresh(); },
+            'reading-position': e => this.readingPositions.reply(e.value),
             reload: () => this.requestReload(),
             locks: () => { void this.folderSessions.refreshLocks(); },
             more: () => { void this.folderSessions.refresh(true); },
@@ -1136,6 +1158,7 @@ export class NativeUI {
 
   disposeForReload() {
     this.ended = true; this.folderSessions.dispose();
+    this.readingPositions.dispose();
     this.c.off('change', this.onChange);
     this.c.off('completion', this.onCompletion);
     if (this.completionTimer) clearTimeout(this.completionTimer);

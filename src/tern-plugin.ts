@@ -5,7 +5,7 @@ import { findExecutable } from './launch';
 
 const exec = promisify(execFile);
 
-export async function runPluginCommand(command: 'setup' | 'sessions' | 'reload') {
+export async function runPluginCommand(command: 'setup' | 'sessions' | 'reload' | 'reading-position') {
   const tern = findExecutable('tern');
   if (!tern) throw new Error('Tern was not found on PATH.');
   if (command === 'setup') {

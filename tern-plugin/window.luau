@@ -2,6 +2,7 @@
 -- and sends UI actions back through Tern; it never sends a prompt or starts Codex.
 local PREFIX = "codex-tern.sessions/v1:"
 local widths = require("./sidebar-width")
+local reading = require("./reading-position")
 local panels = {}
 local timer = nil
 local width_timer = nil
@@ -258,6 +259,23 @@ tern.command({id = "sessions", title = "Codex: Sessions", icon = "history", run 
   end
   if not requested then open(cx) end
 end})
+
+tern.command({id = "reading-position", title = "Codex: Reading position", available = function() return false end,
+  run = function(cx)
+    for _, pane in cx.session:panes() do
+      local state = bridge(cx, pane.pane)
+      local request = state and state.snapshot.readingRequest
+      if request and type(request.token) == "string" then
+        local function done(cx)
+          send(cx, pane.pane, "reading-position", tern.json.encode({token = request.token}))
+        end
+        reading.restore(cx, pane.pane, request, function(cx)
+          local latest = bridge(cx, pane.pane)
+          return latest and latest.snapshot.readingRequest and latest.snapshot.readingRequest.token == request.token
+        end, done)
+      end
+    end
+  end})
 
 tern.command({id = "reload", title = "Codex: Reload Window", icon = "app-codex", run = function(cx)
   remember(cx)

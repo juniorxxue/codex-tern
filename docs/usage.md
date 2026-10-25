@@ -8,6 +8,8 @@ It opens directly in Tern, or launches Tern from another terminal. A repository 
 
 Each session keeps its own task, output, approvals, queue, model choices and draft. Start a task in one session, switch to another, and start another task. Both continue running. Stop affects the selected session.
 
+Each session also remembers where you were reading, including when you only scroll through history. Switching back restores that message and reading line. A session left at the bottom keeps following new output. Reading positions survive interface reloads while the client stays open; they reset when the client exits. This uses the bundled Tern plugin.
+
 Choose **More actions → New session model** to save a default for new sessions in every workspace. The setting survives a client restart. **Use Codex default** restores the model from Codex configuration. Changing this setting leaves existing sessions and running tasks alone; changing a session's model in the composer does not change the saved default. Resuming or forking a session keeps that session's model settings.
 
 **Session details** shows the current model, reasoning effort, workspace and permissions. Session IDs, backend paths and diagnostics are under **Technical details**. Click the workspace name below the composer to choose a folder. The dialog shows its full path, supports **Browse**, and offers the saved new-session model. Invalid paths stay editable with an inline error.
