@@ -49,7 +49,8 @@ test('fork keeps the chosen completed turn and the same directory, leaving sourc
   c.modelOverride = 'chosen-model'; c.effortOverride = 'high';
   await c.forkThread('source', 'first');
   assert.deepEqual(calls, [
-    { method: 'thread/fork', params: { threadId: 'source', lastTurnId: 'first', cwd: '/tmp', excludeTurns: true } },
+    { method: 'thread/fork', params: { threadId: 'source', lastTurnId: 'first', cwd: '/tmp', excludeTurns: true,
+      model: 'chosen-model', config: { model_reasoning_effort: 'high' } } },
     { method: 'thread/turns/list', params: { threadId: 'fork', limit: 15, sortDirection: 'desc', itemsView: 'full' } },
   ]);
   assert.equal(c.thread?.id, 'fork'); assert.equal(c.cwd, '/tmp'); assert.equal(c.sessionReady, true);
@@ -60,6 +61,39 @@ test('fork keeps the chosen completed turn and the same directory, leaving sourc
   assert.equal(c.items, original); assert.equal(c.activeTurn, 'running');
   assert.equal(c.queue[0].text, 'Later'); assert.equal(c.requests[0].id, 11);
   assert.equal(calls.length, 2, 'returning to the source reuses its live state');
+});
+
+for (const overrides of [
+  {}, { model: 'chosen-model' }, { effort: 'none' }, { model: 'chosen-model', effort: 'high' },
+]) test(`fork inherits effective settings and local overrides ${JSON.stringify(overrides)} through its first turn`, async () => {
+  const { c, transport, calls } = setup();
+  c.effective = { thread: c.thread, cwd: '/tmp', model: 'source-model', modelProvider: 'source-provider', reasoningEffort: 'low' } as any;
+  c.modelOverride = overrides.model; c.effortOverride = overrides.effort;
+  const model = overrides.model ?? 'source-model', effort = overrides.effort ?? 'low';
+  const handle = transport.handler;
+  transport.handler = async (method, params) => {
+    if (method === 'thread/fork') return { thread: thread('fork'), cwd: '/tmp', model: 'server-default', reasoningEffort: 'medium' };
+    if (method === 'turn/start') return { turn: turn('fork-turn', 'inProgress') };
+    return handle(method, params);
+  };
+  await c.forkThread('source', 'first');
+  assert.equal(calls[0].params.model, model);
+  assert.equal(calls[0].params.modelProvider, 'source-provider');
+  assert.deepEqual(calls[0].params.config, { model_reasoning_effort: effort });
+  assert.equal(c.model, model); assert.equal(c.effort, effort);
+  await c.submit('Continue the fork');
+  const started = calls.find(call => call.method === 'turn/start')!;
+  assert.equal(started.params.threadId, 'fork');
+  assert.equal(started.params.model, model); assert.equal(started.params.effort, effort);
+  await c.resume('source');
+  assert.equal(c.model, model); assert.equal(c.effort, effort);
+  assert.equal(c.modelOverride, overrides.model); assert.equal(c.effortOverride, overrides.effort);
+});
+
+test('fork omits unknown settings instead of sending display placeholders to Codex', async () => {
+  const { c, calls } = setup();
+  await c.forkThread('source', 'first');
+  assert.deepEqual(calls[0].params, { threadId: 'source', lastTurnId: 'first', cwd: '/tmp', excludeTurns: true });
 });
 
 test('fork rejects an unfinished or stale reply and never retries a rejected mutation', async () => {

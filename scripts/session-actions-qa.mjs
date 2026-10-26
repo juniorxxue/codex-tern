@@ -120,6 +120,14 @@ try {
   const replyBox = tree(`[data-role="omp.assistant"][data-id*="${firstTurn}:"] .sf-md`)[0].rect;
   assert.ok(footer[1] >= replyBox[1] + replyBox[3], 'fork is below the reply');
   ctl('shot fork-reply-footer');
+  click('[data-role="omp.composer.model"]');
+  await wait(() => text('.sf-layer').includes('Other Model'), 'model picker');
+  type('Other Model'); key('Enter');
+  await wait(() => text('[data-role="omp.composer.model"]').includes('Other Model'), 'source model selected');
+  click('[data-role="omp.composer.effort"]');
+  await wait(() => text('.sf-layer').includes('Reasoning effort'), 'effort picker');
+  type('low'); key('Enter');
+  await wait(() => text('[data-role="omp.composer.effort"]').includes('low'), 'source effort selected');
   type('hold'); key('Enter');
   await wait(() => tree('[data-role="omp.composer.stop"]').length === 1, 'source task running');
   type('Source draft 中文');
@@ -138,6 +146,9 @@ try {
   assert.equal(tree('[data-role="omp.composer.send"][aria-disabled="true"]').length, 1);
   const fork = threads().find(t => t.forkedFromId === sourceId);
   assert.equal(fork.cwd, root); assert.deepEqual(fork.turns.map(t => t.id), [firstTurn]);
+  assert.equal(fork.model, 'other-model'); assert.equal(fork.reasoningEffort, 'low');
+  assert.ok(text('[data-role="omp.composer.model"]').includes('Other Model'));
+  assert.ok(text('[data-role="omp.composer.effort"]').includes('low'));
   assert.equal(threads().find(t => t.id === sourceId).turns.length, 3);
   await wait(() => tree(`${row('Source running')} [data-role="codex-tern.sessions.running"]`).length === 1, 'source still working in background');
   ctl('shot fork-selected');
@@ -163,6 +174,13 @@ try {
   assert.ok(draft().includes('Fork draft'));
   assert.ok(!text('[data-role="omp.assistant"]').includes('Later reply excluded'));
   assert.equal(tree(row('重命名 · Draft A')).length, 1);
+  assert.ok(text('[data-role="omp.composer.model"]').includes('Other Model'));
+  assert.ok(text('[data-role="omp.composer.effort"]').includes('low'));
+  click(editor); key('Meta+a'); key('Backspace');
+  await send('Continue the fork');
+  const continued = threads().find(t => t.id === fork.id).turns.at(-1);
+  assert.equal(continued.model, 'other-model'); assert.equal(continued.effort, 'low');
+  pass('fork inherits the source model and effort, including its first send after relaunch');
   const events = (await readFile(wire, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   assert.deepEqual(events.filter(e => e.dir === 'in' && e.body?.ev === 'error').map(e => e.body), []);
   pass('fork history, source link and renamed titles survive relaunch without native protocol errors');

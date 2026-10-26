@@ -14,7 +14,7 @@ Choose **More actions → New session model** to save a default for new sessions
 
 **Session details** shows the current model, reasoning effort, workspace and permissions. Session IDs, backend paths and diagnostics are under **Technical details**. Click the workspace name below the composer to choose a folder. The dialog shows its full path, supports **Browse**, and offers the saved new-session model. Invalid paths stay editable with an inline error.
 
-Click **Fork from here** below a completed reply to continue that conversation in a new session. The fork includes history through that reply, including when later replies already exist. It uses the same working directory and files; no Git worktree is created and no file changes are rolled back. The source keeps its later messages, task, queue and draft. The fork starts with an empty message box. **Open source** returns to the original session.
+Click **Fork from here** below a completed reply to continue that conversation in a new session. The fork includes history through that reply, including when later replies already exist. It inherits the source session's current model and reasoning effort. It uses the same working directory and files; no Git worktree is created and no file changes are rolled back. The source keeps its later messages, task, queue and draft. The fork starts with an empty message box. **Open source** returns to the original session.
 
 While a task runs, open the **Steer / Queue** selector to choose how to send your next message. **Steer** adds input to the current turn; **Queue** waits for that turn to finish. Opening or dismissing the choices keeps the current mode and draft. With no text or images to send, the composer shows only **Stop**; adding content also shows **Send**.
 

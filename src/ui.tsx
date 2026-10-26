@@ -822,7 +822,7 @@ export class NativeUI {
       layer: <col>{!this.panel && (this.draft.describe().c ?? []).filter((n): n is import('@oh-my-pi/pi-tui/native/node').NativeNode => 'k' in n && n.k === 'overlay')
         .map(n => ompNode(n, this.draft.context, () => this.render()))}
         {this.isPicker() ? this.renderPicker() : this.panel && <overlay key="panel" role={`ct.dialog.${this.panel}`} anchor="center" size={this.panel === 'diff' ? 'lg' : 'md'} modal head={this.panelTitle()}>
-        <col key="body" gap="sm">{this.renderPanel()}{!['workspace', 'details'].includes(this.panel) && <><rule />{this.button(this.panel === 'rename' ? 'Cancel · Esc' : 'Close · Esc', () => this.closePanel())}</>}</col>
+        <col key="body" gap="sm">{this.renderPanel()}{!['workspace', 'details', 'rename'].includes(this.panel) && <><rule />{this.button('Close · Esc', () => this.closePanel())}</>}</col>
       </overlay>}</col>,
     });
   }
@@ -936,14 +936,19 @@ export class NativeUI {
     const c = this.c;
     switch (this.panel) {
       case 'rename': return <>
+        <html.div class="ct-field-heading">Session name</html.div>
         <input key="field" role="ct.session.name" aria="Session name" text={this.dialogDraft.text}
-          cursor={this.dialogDraft.cursor} anchor={this.dialogDraft.anchor} placeholder="Session name"
+          cursor={this.dialogDraft.cursor} anchor={this.dialogDraft.anchor} placeholder="Session name" readonly={this.renaming?.saving}
           onEdit={e => { if (!this.renaming?.saving) this.dialogDraft.nativeEdit(e); this.render(); }}
           onUndo={() => { if (!this.renaming?.saving) this.dialogDraft.undo(); this.render(); }}
           onFocus={() => { this.focused = 'layer.panel.body.field'; this.surface.focus(this.focused); }} />
-        {!!this.renaming?.error && <text role="ct.rename.error" tone="error" text={this.renaming.error} />}
-        {this.button(this.renaming?.saving ? 'Saving…' : 'Save name', () => { void this.confirmRename(); }, 'ct-primary',
-          !!this.renaming?.saving || !this.dialogDraft.text.trim())}
+        {!!this.renaming?.error && <html.div class="ct-field-error" role="ct.rename.error"><icon name="warn" />{this.renaming.error}</html.div>}
+        <html.div class="ct-dialog-footer">
+          <html.span class="ct-footer-hint">Enter to save · Esc to cancel</html.span>
+          {this.button('Cancel', () => this.closePanel())}
+          {this.button(this.renaming?.saving ? 'Saving…' : 'Save name', () => { void this.confirmRename(); }, 'ct-primary',
+            !!this.renaming?.saving || !this.dialogDraft.text.trim())}
+        </html.div>
       </>;
       case 'workspace': return <WorkspaceForm c={c} draft={this.dialogDraft} path={this.workspacePath()}
         error={this.workspaceError} opening={this.workspaceOpening}

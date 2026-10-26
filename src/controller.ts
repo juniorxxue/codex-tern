@@ -368,14 +368,19 @@ export class Controller extends EventEmitter {
     if (this.thread?.id !== threadId || !this.sessionReady || !this.forkReply(turnId))
       throw new Error('Choose a completed reply in the current session to fork.');
     const source = this.selected;
+    const model = source.modelOverride ?? source.effective?.model;
+    const effort = source.effortOverride ?? source.effective?.reasoningEffort;
     this.navigation = 'Forking session…'; this.changed();
     try {
       const result = await this.rpc.request('thread/fork', {
         threadId, lastTurnId: turnId, cwd: source.cwd, excludeTurns: true,
+        ...(model ? { model } : {}),
+        ...(source.effective?.modelProvider ? { modelProvider: source.effective.modelProvider } : {}),
+        ...(effort ? { config: { model_reasoning_effort: effort } } : {}),
       });
       const next = this.conversation(result.thread.id);
       next.adopt(result);
-      next.modelOverride = source.modelOverride; next.effortOverride = source.effortOverride;
+      next.modelOverride = model; next.effortOverride = effort ?? undefined;
       try { await next.loadHistory(); next.hydrated = true; }
       finally {
         // Creation already succeeded. Keep the fork accessible even if reading

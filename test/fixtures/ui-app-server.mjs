@@ -54,7 +54,7 @@ function acquire(id) {
 const model = id => ({ id, model: id, displayName: id === 'qa-model' ? 'QA Model' : 'Other Model',
   description: 'UI test fixture', isDefault: id === 'qa-model', hidden: false,
   supportedReasoningEfforts: ['low', 'high'].map(reasoningEffort => ({ reasoningEffort, description: reasoningEffort })), defaultReasoningEffort: 'high' });
-const settings = thread => ({ thread, cwd: thread.cwd, model: thread.model ?? 'qa-model', reasoningEffort: 'high',
+const settings = thread => ({ thread, cwd: thread.cwd, model: thread.model ?? 'qa-model', reasoningEffort: thread.reasoningEffort ?? 'high',
   approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandbox: { type: 'workspaceWrite' } });
 const event = (method, extra) => {
   const { current, turn } = local.getStore();
@@ -124,6 +124,7 @@ createInterface({ input: process.stdin }).on('line', line => {
       }
       const fork = { ...structuredClone(source), id: `qa-thread-${++seq}`, forkedFromId: source.id,
         name: `Fork of ${source.name || source.preview}`, cwd: m.params.cwd ?? source.cwd,
+        model: m.params.model ?? source.model, reasoningEffort: m.params.config?.model_reasoning_effort ?? source.reasoningEffort,
         createdAt: Date.now() / 1000, updatedAt: Date.now() / 1000, recencyAt: Date.now() / 1000,
         turns: structuredClone(source.turns.slice(0, at + 1)) };
       // Forking must not replace the source's live AsyncLocalStorage context.
@@ -183,7 +184,10 @@ createInterface({ input: process.stdin }).on('line', line => {
       }
       current.preview ||= text || 'Image';
       current.recencyAt = current.updatedAt = Date.now() / 1000;
-      turn = { id: `qa-turn-${++seq}`, items: [], status: 'inProgress', startedAt: Date.now() / 1000, durationMs: null };
+      current.model = m.params.model ?? current.model ?? 'qa-model';
+      current.reasoningEffort = m.params.effort ?? current.reasoningEffort ?? 'high';
+      turn = { id: `qa-turn-${++seq}`, items: [], status: 'inProgress', startedAt: Date.now() / 1000, durationMs: null,
+        model: current.model, effort: current.reasoningEffort };
       context.turn = turn;
       current.turns.push(turn);
       if (text.includes('QA_CRASH_DELIVERY')) {

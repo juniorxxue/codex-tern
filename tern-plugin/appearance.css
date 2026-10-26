@@ -10,34 +10,36 @@
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
-  .sf.sf-input[data-role="ct.session.name"],
-  .sf.sf-input[data-role="ct.session.name"].focused {
-    background: var(--raise);
-  }
-  .sf.sf-input[data-role="ct.session.name"] .sf-ed-text {
-    white-space: nowrap;
-  }
   .sf.sf-overlay[data-role="ct.dialog.details"],
-  .sf.sf-overlay[data-role="ct.dialog.workspace"] {
+  .sf.sf-overlay[data-role="ct.dialog.workspace"],
+  .sf.sf-overlay[data-role="ct.dialog.rename"] {
     font-family: var(--ct-prose);
     font-size: 14px;
     line-height: 21px;
   }
   .sf.sf-overlay[data-role="ct.dialog.details"] > .sf-ov-card,
-  .sf.sf-overlay[data-role="ct.dialog.workspace"] > .sf-ov-card {
+  .sf.sf-overlay[data-role="ct.dialog.workspace"] > .sf-ov-card,
+  .sf.sf-overlay[data-role="ct.dialog.rename"] > .sf-ov-card {
     width: 560px;
     max-width: calc(100% - 32px);
     border-radius: 18px;
   }
   .sf.sf-overlay[data-role="ct.dialog.details"] .sf-ov-head,
-  .sf.sf-overlay[data-role="ct.dialog.workspace"] .sf-ov-head {
+  .sf.sf-overlay[data-role="ct.dialog.workspace"] .sf-ov-head,
+  .sf.sf-overlay[data-role="ct.dialog.rename"] .sf-ov-head {
     padding: 20px 24px 14px;
     font: 600 18px/24px var(--ct-prose);
   }
   .sf.sf-overlay[data-role="ct.dialog.details"] .sf-ov-body,
-  .sf.sf-overlay[data-role="ct.dialog.workspace"] .sf-ov-body { padding: 20px 24px 16px; }
+  .sf.sf-overlay[data-role="ct.dialog.workspace"] .sf-ov-body,
+  .sf.sf-overlay[data-role="ct.dialog.rename"] .sf-ov-body { padding: 20px 24px 16px; }
   .sf.sf-overlay[data-role="ct.dialog.details"] .sf-ov-body > .sf-col,
-  .sf.sf-overlay[data-role="ct.dialog.workspace"] .sf-ov-body > .sf-col { gap: 0; min-width: 0; }
+  .sf.sf-overlay[data-role="ct.dialog.workspace"] .sf-ov-body > .sf-col,
+  .sf.sf-overlay[data-role="ct.dialog.rename"] .sf-ov-body > .sf-col { gap: 0; min-width: 0; }
+  .sf.sf-overlay[data-role="ct.dialog.rename"] > .sf-ov-card { width: 480px; }
+  .sf.sf-overlay[data-role="ct.dialog.rename"] .sf-ov-head { padding-bottom: 0; box-shadow: none; }
+  .sf.sf-overlay[data-role="ct.dialog.rename"] .sf-ov-body { padding-bottom: 20px; }
+  .sf.sf-overlay[data-role="ct.dialog.rename"] .ct-dialog-footer { border-top: 0; padding-top: 0; margin-top: 20px; }
   .ct-dialog-hero, .ct-workspace-preview { display: flex; align-items: center; gap: 12px; min-width: 0; }
   .ct-dialog-heading { flex: 1; min-width: 0; }
   .ct-dialog-icon { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px;
@@ -88,12 +90,18 @@
     font: 12px/20px var(--ct-prose); color: var(--t2); cursor: pointer; background: transparent; }
   .ct-browse .sf-icon, .ct-browse .ico { width: 13px; height: 13px; }
   .ct-browse:hover { background: var(--raise); }
-  .sf.sf-input[data-role="ct.workspace.path"], .sf.sf-input[data-role="ct.workspace.path"].focused {
+  .sf.sf-input[data-role="ct.workspace.path"], .sf.sf-input[data-role="ct.workspace.path"].focused,
+  .sf.sf-input[data-role="ct.session.name"], .sf.sf-input[data-role="ct.session.name"].focused {
     background: var(--raise); border: 1px solid var(--l2); border-radius: 9px; min-height: 40px;
     padding: 9px 12px; font: 12px/20px var(--mono);
   }
-  .sf.sf-input[data-role="ct.workspace.path"].focused { border-color: var(--accent); box-shadow: none; }
-  .sf.sf-input[data-role="ct.workspace.path"] .sf-ed-text { white-space: nowrap; font: inherit; }
+  .sf.sf-input[data-role="ct.session.name"], .sf.sf-input[data-role="ct.session.name"].focused {
+    font: 14px/22px var(--ct-prose); letter-spacing: 0; min-width: 0;
+  }
+  .sf.sf-input[data-role="ct.workspace.path"].focused,
+  .sf.sf-input[data-role="ct.session.name"].focused { border-color: var(--accent); box-shadow: none; }
+  .sf.sf-input[data-role="ct.workspace.path"] .sf-ed-text,
+  .sf.sf-input[data-role="ct.session.name"] .sf-ed-text { white-space: nowrap; font: inherit; }
   .ct-field-error { display: flex; align-items: center; gap: 7px; color: var(--bad); font: 12px/19px var(--ct-prose); margin-top: 8px; }
   .ct-field-error .sf-icon, .ct-field-error .ico { width: 13px; height: 13px; flex-shrink: 0; }
   .ct-default-model:focus-visible, .ct-detail-card:focus-visible, .ct-browse:focus-visible {
