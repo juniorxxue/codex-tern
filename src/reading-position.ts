@@ -20,14 +20,28 @@ const anchorId = (node: Element) => {
 };
 const execAsync = promisify(execFile);
 
+/** Replies keep their prompt's topic; leading history/fork controls belong to the first indexed prompt. */
+export function readingPromptMap(nodes: readonly string[], prompts: ReadonlyMap<string, string>, indexed: (prompt: string) => boolean) {
+  const result = new Map<string, string>();
+  let prompt = nodes.map(id => prompts.get(id)).find((id): id is string => !!id && indexed(id));
+  for (const id of nodes) {
+    const next = prompts.get(id);
+    // Pending input keeps the current topic until the index catches up.
+    if (next && indexed(next)) prompt = next;
+    if (prompt) result.set(id, prompt);
+  }
+  return result;
+}
+
 /** Geometry only: no focus, reveal, scrolling, or transcript writes. */
 export async function inspectReadingFocus(role: string, client: string) {
   const tern = findExecutable('tern');
   if (!tern) return;
   const main = mainSelector(role);
+  const assistant = `${main} > .sf > [data-role="omp.assistant"]`;
   const toc = `[data-role="codex-tern.toc"][data-mark=${quoted(client)}]`;
   try {
-    const { stdout } = await execAsync(tern, ['ctl', `tree .tv, .tv-grid, ${main}, ${main} > .sf, .sf-dock, ${toc} > [data-role="codex-tern.toc.body"], ${toc} > [data-role="codex-tern.toc.footer"]`],
+    const { stdout } = await execAsync(tern, ['ctl', `tree .tv, .tv-grid, ${main}, ${main} > .sf, ${assistant} > .sf-md, ${assistant} > .ct-proposal, ${assistant} > .ct-proposal-actions, .sf-dock, ${toc} > [data-role="codex-tern.toc.body"], ${toc} [data-role="codex-tern.toc.label"], ${toc} > [data-role="codex-tern.toc.footer"]`],
       { timeout: 750, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' });
     const reply = JSON.parse(stdout);
     if (reply.ok && Array.isArray(reply.nodes) && reply.nodes.every((n: Element) =>
@@ -38,34 +52,46 @@ export async function inspectReadingFocus(role: string, client: string) {
 /** Input is the ordered result of the selector above, from one native layout. */
 export function readingFocus(nodes: readonly Element[]) {
   let terminal: Element | undefined, grid: Element | undefined;
-  let view: { following: boolean; grid: Element; bottom: number; nodes: Element[] } | undefined;
-  let inside = false, toc: { grid: Element; body: Element; footer: number } | undefined;
+  let view: { following: boolean; grid: Element; bottom: number; nodes: (Element & { contentBottom?: number })[] } | undefined;
+  let inside = false, toc: { grid: Element; body: Element; footer: number; bottom: number; line: number } | undefined;
   for (const node of nodes) {
     if (hasClass(node, 'tv')) { terminal = node; inside = false; }
     else if (hasClass(node, 'tv-grid')) grid = node;
     else if (hasClass(node, 'sf-main') && terminal && grid) {
       view = { following: !hasClass(terminal, 'scrolled'), grid, bottom: grid.rect[1]! + grid.rect[3]!, nodes: [] };
       inside = true;
-    } else if (hasClass(node, 'sf-dock') && inside && view) {
-      view.bottom = Math.min(view.bottom, node.rect[1]!); inside = false;
+    } else if (hasClass(node, 'sf-dock')) {
+      if (inside && view) { view.bottom = Math.min(view.bottom, node.rect[1]!); inside = false; }
+      // Canvas cards have their own native dock, even when it looks empty.
+      // The list must fit above it, not merely inside the terminal grid.
+      if (toc && grid === toc.grid && node.rect[3]! > 0) toc.bottom = Math.min(toc.bottom, node.rect[1]!);
     } else if (hasClass(node, 'sf-list') && grid) {
-      toc = { grid, body: node, footer: 0 };
+      toc = { grid, body: node, footer: 0, bottom: grid.rect[1]! + grid.rect[3]!, line: 22 };
+    } else if (hasClass(node, 'sf-text') && toc && grid === toc.grid && node.rect[3]! > 0) {
+      // Labels occupy one line. Their measured height includes the pane's zoom.
+      toc.line = node.rect[3]!;
     } else if (hasClass(node, 'sf-col') && toc && grid === toc.grid && node.rect[3]! > 0) {
-      toc.footer = node.rect[3]! + 10;
-    } else if (inside && view && anchorId(node)) view.nodes.push(node);
+      toc.footer = node.rect[3]! + 10 * toc.line / 22;
+    } else if (inside && view && anchorId(node)) view.nodes.push({ ...node });
+    else if (inside && view && (hasClass(node, 'sf-md') || hasClass(node, 'ct-proposal') || hasClass(node, 'ct-proposal-actions'))) {
+      const block = view.nodes.at(-1);
+      if (block && node.rect[3]! > 0) block.contentBottom = Math.max(block.contentBottom ?? -Infinity, node.rect[1]! + node.rect[3]!);
+    }
   }
   if (!view || view.grid.rect[3]! <= 0 || view.bottom <= view.grid.rect[1]!) return;
   const top = view.grid.rect[1]!;
   const visible = view.nodes.filter(n => n.rect[3]! > 0);
   // Do not skip a short prompt at the top in favour of the next prompt below it.
-  const first = visible.find(n => n.rect[1]! + n.rect[3]! > top + 1 && n.rect[1]! < view!.bottom);
+  const bottom = (n: typeof visible[number]) => n.contentBottom ?? n.rect[1]! + n.rect[3]!;
+  // A reply's footer and spacing do not keep its topic active after its prose leaves.
+  const first = visible.find(n => bottom(n) > top + 1 && n.rect[1]! < view!.bottom);
   const tail = visible.at(-1), node = view.following ? tail : first;
   const position: ReadingView | undefined = first ? { anchor: { id: anchorId(first)!, offset: first.rect[1]! - top },
     following: view.following, tail: tail && anchorId(tail) } : undefined;
-  // Match the session explorer's 22px line height; leave room for the footer.
-  const lines = toc && Math.max(1, Math.floor((toc.grid.rect[1]! + toc.grid.rect[3]! - toc.body.rect[1]! - toc.footer - 14) / 22));
+  // The native list's max.lines scales with the font; geometry is already zoomed.
+  const lines = toc && Math.max(1, Math.floor((toc.bottom - toc.body.rect[1]! - toc.footer - 14 * toc.line / 22) / toc.line));
   return { node: node && anchorId(node), lines, position,
-    visible: visible.filter(n => n.rect[1]! + n.rect[3]! > top && n.rect[1]! < view!.bottom).map(n => anchorId(n)!) };
+    visible: visible.filter(n => bottom(n) > top && n.rect[1]! < view!.bottom).map(n => anchorId(n)!) };
 }
 
 /** Pane movement is not scrolling; compare an anchor relative to its own viewport. */

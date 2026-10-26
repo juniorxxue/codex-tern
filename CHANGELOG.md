@@ -17,6 +17,7 @@ Notable changes, newest first. This log starts with the update below.
 
 ### Fixed
 
+- The TOC follows scrolling promptly, keeps the first topic highlighted at fork banners and history controls, and advances when the previous reply's prose leaves the screen. Selected rows stay fully visible above the card's bottom area, including with enlarged fonts.
 - The TOC indexes discussion topics across prompts. One prompt with a long reply stays one entry, related follow-ups stay grouped, and reply sections no longer fill the card. Older saved outlines rebuild with the new rules when opened.
 - Clicking a TOC heading keeps it selected until the reading position changes, including short conversations and headings that share a prompt.
 - Short prompts keep their reading highlight until they leave the top of the viewport.

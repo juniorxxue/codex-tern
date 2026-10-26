@@ -28,6 +28,7 @@ local function paint(cx, pane, entry, snapshot)
   end
 end
 function outline.update(cx, bridge)
+  local following = false
   for pane, entry in panels do
     if not cx.session:pane(pane) or not cx.canvas:get(pane) then panels[pane] = nil; continue end
     local state = bridge(cx, entry.target)
@@ -41,12 +42,13 @@ function outline.update(cx, bridge)
     end
     if state and state.snapshot.tocFollowProtocol == 1 and state.snapshot.toc and #(state.snapshot.toc.topics or {}) > 0 then
       local card, focused = cx.session:pane(pane), cx.session:pane(cx.session:focused())
-      if card and focused and not card.parked and card.tab == focused.tab and tern.now() - (entry.followed or 0) >= 200 then
-        entry.followed = tern.now()
+      if card and focused and not card.parked and card.tab == focused.tab then
+        following = true
         cx.session:event(entry.target, {sf = state.sf, ev = "action", id = "dock.sessions", act = "toc-follow"})
       end
     end
   end
+  return following
 end
 function outline.open(cx, target, neighbour, state)
   outline.remember(cx)

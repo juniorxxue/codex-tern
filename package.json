@@ -26,6 +26,7 @@
     "test:session-titles": "bun scripts/session-titles-qa.mjs",
     "test:toc": "bun scripts/toc-qa.mjs",
     "test:toc-focus": "bun scripts/toc-focus-qa.mjs",
+    "test:toc-scroll": "bun scripts/toc-scroll-qa.mjs",
     "test:settings": "bun scripts/settings-qa.mjs",
     "test:sidebar-width": "bun scripts/sidebar-width-qa.mjs",
     "check": "bun --bun tsc --noEmit",

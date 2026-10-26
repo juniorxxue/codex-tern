@@ -27,7 +27,7 @@ import { assistantParts } from './proposals';
 import { ProposalView } from './proposal-view';
 import { runPluginCommand } from './tern-plugin';
 import { SessionDetails, WorkspaceForm, modelName } from './session-panels';
-import { ReadingPositions, readingAnchorClass, inspectReadingFocus, sameReadingView, type ReadingView } from './reading-position';
+import { ReadingPositions, readingAnchorClass, readingPromptMap, inspectReadingFocus, sameReadingView, type ReadingView } from './reading-position';
 import type { OutlineLocation } from './session-outline';
 
 const styles = css`
@@ -83,6 +83,7 @@ export class NativeUI {
   answerTarget: { requestId: string | number; questionId: string } | null = null;
   sendMode: 'steer' | 'queue' = 'steer';
   private renderTimer?: NodeJS.Timeout;
+  private rendered?: { main: Node; dock: Node; layer: Node };
   private ended = false;
   private pendingActions = 0;
   private focused = 'dock.body.line.input';
@@ -195,7 +196,9 @@ export class NativeUI {
         || this.tocJumping || this.tocJump !== jump || this.c.thread?.id !== threadId || this.c.outline?.revision !== revision) return;
       const prompt = focus.node && prompts.get(focus.node);
       const location = prompt ? this.c.outlineLocation(threadId, prompt) : undefined;
-      let next = location && { threadId, ...location };
+      // Virtualization may briefly leave no measured message during a scroll.
+      // Keep this session's last location until a real reading anchor is available.
+      let next = location ? { threadId, ...location } : this.tocLocation?.threadId === threadId ? this.tocLocation : undefined;
       const selected = this.tocSelections.get(threadId);
       if (selected) {
         if (selected.revision !== revision
@@ -208,7 +211,7 @@ export class NativeUI {
         }
       }
       if (JSON.stringify(this.tocLocation) !== JSON.stringify(next) || this.tocLines !== focus.lines) {
-        this.tocLocation = next; this.tocLines = focus.lines; this.render();
+        this.tocLocation = next; this.tocLines = focus.lines; this.refreshSessionBridge();
       }
     } finally { this.tocInspecting = false; }
   }
@@ -735,6 +738,45 @@ export class NativeUI {
     </col></html.div>;
   }
 
+  private renderSessionBridge() {
+    const c = this.c;
+    return <text key="sessions" hidden title={JSON.stringify({ ...this.folderSessions.snapshot, cols: this.session.caps.cols,
+      sidebarRequest: this.sidebarRequested ? this.clientInstance : undefined,
+      readingRequest: this.readingPositions.request,
+      tocProtocol: 1, tocFollowProtocol: 1, tocClient: this.clientInstance, tocLines: this.tocLines,
+      toc: c.outline && { ...c.outline,
+        error: this.tocError && this.tocError.threadId === c.thread?.id ? this.tocError.message : c.outline.error,
+        location: this.tocLocation?.threadId === c.thread?.id ? this.tocLocation : undefined },
+      cellWidth: this.session.caps.cell.w,
+      rows: this.folderSessions.snapshot.rows.map(row => ({ ...row, canArchive: row.canArchive && !this.hasSessionDraft(row.id) })),
+      archiveProtocol: 1, renameProtocol: 1, navigationProtocol: 1, newSessionProtocol: 1,
+      reloadProtocol: this.reloadWindow ? 1 : undefined, uiGeneration: this.generation, navigation: this.sidebarNavigation })}
+      onAction={{ refresh: () => { void this.folderSessions.refresh(); },
+        'reading-position': e => this.readingPositions.reply(e.value),
+        'toc-get': e => { if (e.value) { this.tocError = undefined; void c.generateOutline(e.value); } },
+        'toc-rebuild': e => { if (e.value) { this.tocError = undefined; void c.generateOutline(e.value, true); } },
+        'toc-jump': e => { void this.jumpOutline(e.value); },
+        'toc-follow': () => { void this.followOutline(); },
+        reload: () => this.requestReload(),
+        locks: () => { void this.folderSessions.refreshLocks(); },
+        more: () => { void this.folderSessions.refresh(true); },
+        hide: () => this.folderSessions.hide(),
+        new: () => this.action(() => this.newSession()),
+        archive: e => this.action(() => this.archiveSession(e.value)),
+        rename: e => this.action(async () => this.openRenameSession(e.value)),
+        resume: e => { void this.resumeFromSidebar(e.value); } }} /> as Node;
+  }
+
+  private refreshSessionBridge() {
+    if (!this.rendered || this.ended || this.surface.closed) return;
+    const dock = this.rendered.dock;
+    // Reading changes navigation only. Reuse the transcript and editor trees,
+    // so scrolling through a long history does not rebuild every message.
+    this.rendered = { ...this.rendered, dock: new Node(dock.kind, dock.props,
+      [this.renderSessionBridge(), ...dock.children.slice(1)]) };
+    this.surface.render(this.rendered);
+  }
+
   render() {
     if (this.ended) return;
     this.syncComposer();
@@ -780,43 +822,13 @@ export class NativeUI {
     this.readingPositions.nodes = main.children.map((node, i) => `main.${node.props.key ?? i}`);
     const prompts = new Map(c.items.filter(entry => entry.item.type === 'userMessage').map(entry => [
       `main.${entry.item.type === 'userMessage' && entry.item.clientId ? `${entry.turnId}:client:${entry.item.clientId}` : entry.id}`, entry.id]));
-    this.readingPrompts = new Map();
-    let prompt: string | undefined;
-    for (const id of this.readingPositions.nodes) {
-      const next = prompts.get(id);
-      // Unindexed pending input keeps the last known topic until the agent catches up.
-      if (next && c.thread && c.outlineLocation(c.thread.id, next)) prompt = next;
-      if (prompt) this.readingPrompts.set(id, prompt);
-    }
+    this.readingPrompts = readingPromptMap(this.readingPositions.nodes, prompts,
+      id => !!c.thread && !!c.outlineLocation(c.thread.id, id));
     main = new Node(main.kind, main.props, main.children.map((node, i) =>
       html.div({ key: String(node.props.key ?? i), class: readingAnchorClass(this.readingPositions.nodes[i]!) }, node)));
-    this.surface.render({ main,
+    this.surface.render(this.rendered = { main,
       dock: <col>
-        <text key="sessions" hidden title={JSON.stringify({ ...this.folderSessions.snapshot, cols: this.session.caps.cols,
-          sidebarRequest: this.sidebarRequested ? this.clientInstance : undefined,
-          readingRequest: this.readingPositions.request,
-          tocProtocol: 1, tocFollowProtocol: 1, tocClient: this.clientInstance, tocLines: this.tocLines,
-          toc: c.outline && { ...c.outline,
-            error: this.tocError && this.tocError.threadId === c.thread?.id ? this.tocError.message : c.outline.error,
-            location: this.tocLocation?.threadId === c.thread?.id ? this.tocLocation : undefined },
-          cellWidth: this.session.caps.cell.w,
-          rows: this.folderSessions.snapshot.rows.map(row => ({ ...row, canArchive: row.canArchive && !this.hasSessionDraft(row.id) })),
-          archiveProtocol: 1, renameProtocol: 1, navigationProtocol: 1, newSessionProtocol: 1,
-          reloadProtocol: this.reloadWindow ? 1 : undefined, uiGeneration: this.generation, navigation: this.sidebarNavigation })}
-          onAction={{ refresh: () => { void this.folderSessions.refresh(); },
-            'reading-position': e => this.readingPositions.reply(e.value),
-            'toc-get': e => { if (e.value) { this.tocError = undefined; void c.generateOutline(e.value); } },
-            'toc-rebuild': e => { if (e.value) { this.tocError = undefined; void c.generateOutline(e.value, true); } },
-            'toc-jump': e => { void this.jumpOutline(e.value); },
-            'toc-follow': () => { void this.followOutline(); },
-            reload: () => this.requestReload(),
-            locks: () => { void this.folderSessions.refreshLocks(); },
-            more: () => { void this.folderSessions.refresh(true); },
-            hide: () => this.folderSessions.hide(),
-            new: () => this.action(() => this.newSession()),
-            archive: e => this.action(() => this.archiveSession(e.value)),
-            rename: e => this.action(async () => this.openRenameSession(e.value)),
-            resume: e => { void this.resumeFromSidebar(e.value); } }} />
+        {this.renderSessionBridge()}
         {this.completion && <row key="completion" role="ct.completion" gap="sm" align="center">
           <icon key="icon" name={this.completion.status === 'completed' ? 'check' : 'warn'} role="ct.completion.icon" />
           <text key="label" grow={1} lines={1} text={`${this.completion.status === 'completed' ? 'Task complete' : 'Task failed'}${this.completion.threadId === c.thread?.id ? '' : ` · ${this.completion.title}`}`} />
@@ -919,12 +931,12 @@ export class NativeUI {
             </row>}
           </row>
         </ComposerFrame>
-      </col>,
+      </col> as Node,
       layer: <col>{!this.panel && (this.draft.describe().c ?? []).filter((n): n is import('@oh-my-pi/pi-tui/native/node').NativeNode => 'k' in n && n.k === 'overlay')
         .map(n => ompNode(n, this.draft.context, () => this.render()))}
         {this.isPicker() ? this.renderPicker() : this.panel && <overlay key="panel" role={`ct.dialog.${this.panel}`} anchor="center" size={this.panel === 'diff' ? 'lg' : 'md'} modal head={this.panelTitle()}>
         <col key="body" gap="sm">{this.renderPanel()}{!['workspace', 'details', 'rename'].includes(this.panel) && <><rule />{this.button('Close · Esc', () => this.closePanel())}</>}</col>
-      </overlay>}</col>,
+      </overlay>}</col> as Node,
     });
   }
 

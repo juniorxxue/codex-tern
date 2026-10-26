@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ReadingPositions, readingAnchorClass, readingFocus, sameReadingView } from '../src/reading-position';
+import { ReadingPositions, readingAnchorClass, readingPromptMap, readingFocus, sameReadingView } from '../src/reading-position';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const inspection = {
@@ -18,6 +18,14 @@ const readingLayout = (following = false) => [
   element(`sf-el ${readingAnchorClass('main.next-reply')}`, 460, 400), element('sf-dock', 600, 100),
 ];
 
+test('fork and history controls keep the first topic, long replies and pending input keep their preceding topic', () => {
+  const nodes = ['origin', 'earlier', 'user-a', 'reply-a', 'user-b', 'reply-b', 'pending'];
+  const prompts = new Map([['user-a', 'a'], ['user-b', 'b'], ['pending', 'new']]);
+  const mapped = readingPromptMap(nodes, prompts, id => id === 'a' || id === 'b');
+  assert.deepEqual([...mapped.values()], ['a', 'a', 'a', 'a', 'b', 'b', 'b']);
+  assert.equal(readingPromptMap(nodes, prompts, () => false).size, 0, 'no invented location before indexing');
+});
+
 test('scroll focus includes the reply crossing the viewport and switches only as the next prompt reaches it', () => {
   const layout = readingLayout();
   assert.equal(readingFocus(layout)?.node, 'main.reading-reply');
@@ -32,8 +40,22 @@ test('TOC sizing uses its own card and missing or hidden transcript geometry is 
   const layout = [...readingLayout(), element('tv', 300, 200), element('tv-grid', 300, 200), element('sf-list', 342, 100)];
   assert.equal(readingFocus(layout)?.lines, 6);
   assert.equal(readingFocus([...layout, element('sf-col', 450, 38)])?.lines, 4, 'a retry footer keeps its space');
+  assert.equal(readingFocus([...layout, element('sf-dock', 466, 24)])?.lines, 5, 'the native canvas dock clips the list before the grid ends');
+  assert.equal(readingFocus([...layout, element('sf-text nowrap', 347, 33), element('sf-dock', 466, 24)])?.lines, 3,
+    'zoomed labels use their actual line height, not the unscaled 22px style');
   assert.equal(readingFocus([]), undefined);
   assert.equal(readingFocus([element('tv', 0, 0), element('tv-grid', 0, 0), element('sf-main', 0, 0)]), undefined);
+});
+
+test('a leftover reply footer cannot hold the old topic after the actual answer has left the viewport', () => {
+  const layout = [element('tv scrolled', 45, 844), element('tv-grid', 55, 834), element('sf-main', -1207, 3000),
+    element(`sf-el ${readingAnchorClass('main.previous-reply')}`, -1207, 1304), element('sf sf-md', -1207, 1260),
+    element(`sf-el ${readingAnchorClass('main.next-prompt')}`, 117, 49),
+    element(`sf-el ${readingAnchorClass('main.next-reply')}`, 186, 1304), element('sf sf-md', 186, 1260),
+    element('sf-dock', 743, 136)];
+  assert.equal(readingFocus(layout)?.node, 'main.next-prompt');
+  layout[3]!.rect[1] += 20; layout[4]!.rect[1] += 20;
+  assert.equal(readingFocus(layout)?.node, 'main.previous-reply', 'a remaining line of prose still owns the topic');
 });
 
 test('adjacent short prompts do not advance the reading topic before the first leaves the viewport', () => {

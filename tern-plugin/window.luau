@@ -8,6 +8,7 @@ local panels = {}
 local timer = nil
 local width_timer = nil
 local fast_until = 0
+local following_outline = false
 local selection_seq = 0
 
 local function bridge(cx, target)
@@ -198,12 +199,13 @@ local function poll(fast)
   local live = outline.live()
   for _, entry in panels do if entry.raw ~= "closed" then live = true; break end end
   if not live then return end
-  -- Clicks need a prompt response; an idle panel can poll less often.
-  timer = tern.timer(if tern.now() < fast_until then 50 elseif outline.live() then 250 else 700, function(cx)
+  -- Reading is continuous input too. Two 250ms polls (inspect, then paint)
+  -- visibly trail the transcript, even when the geometry query itself is fast.
+  timer = tern.timer(if tern.now() < fast_until or following_outline then 50 else 700, function(cx)
     timer = nil
     if cx then
       for pane, entry in panels do update(cx, pane, entry) end
-      outline.update(cx, bridge)
+      following_outline = outline.update(cx, bridge)
     end
     poll()
   end)
@@ -425,7 +427,7 @@ local function restore(cx)
   widths.sync(cx, panels)
   watch_widths()
   for pane, entry in panels do update(cx, pane, entry) end
-  outline.update(cx, bridge)
+  following_outline = outline.update(cx, bridge)
   poll()
 end
 
