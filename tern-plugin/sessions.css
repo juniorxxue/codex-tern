@@ -1,4 +1,4 @@
-[data-role="codex-tern.sessions"] {
+[data-role="codex-tern.sessions"], [data-role="codex-tern.toc"] {
   padding: 14px 8px;
   gap: 2px;
   font-family: "Concourse T3", "LXGW Neo XiHei", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
@@ -20,14 +20,18 @@
 [data-role="codex-tern.sessions.new"]:hover { background: var(--l2); }
 [data-role="codex-tern.sessions.new"] > .sf-icon { width: 14px; height: 14px; }
 [data-role="codex-tern.sessions.new"][data-mark="disabled"] { opacity: 0.5; cursor: default; }
-[data-role="codex-tern.sessions.item"] {
+[data-role="codex-tern.sessions.item"],
+[data-role="codex-tern.toc.topic"], [data-role="codex-tern.toc.child"] {
   padding: 5px 6px;
   border-radius: 7px;
   gap: 0;
   transition: none;
 }
-[data-role="codex-tern.sessions.item"]:hover { background: var(--raise); }
-[data-role="codex-tern.sessions.item"][data-mark="pick"] { background: var(--l2); }
+[data-role="codex-tern.sessions.item"]:hover,
+[data-role="codex-tern.toc.topic"]:hover, [data-role="codex-tern.toc.child"]:hover { background: var(--raise); }
+[data-role="codex-tern.sessions.item"][data-mark="pick"],
+[data-role="codex-tern.toc.topic"][data-mark="pick"], [data-role="codex-tern.toc.child"][data-mark="pick"] { background: var(--l2); }
+[data-role="codex-tern.sessions.item"][data-mark="pending"] { box-shadow: inset 0 0 0 1px var(--l2); }
 [data-role="codex-tern.sessions.item"][data-mark="locked"] { color: var(--t3); cursor: default; }
 [data-role="codex-tern.sessions.item"][data-mark="locked"]:hover { background: transparent; }
 [data-role="codex-tern.sessions.lock"],
@@ -88,40 +92,30 @@
 
 /* The TOC is a separate native canvas. Tern owns its frame and scrolling. */
 [data-role="codex-tern.toc"] {
-  padding: 14px 12px; gap: 10px;
-  font-family: "Concourse T3", "LXGW Neo XiHei", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
-  font-size: 15px; line-height: 24px; color: var(--t1);
+  gap: 2px;
 }
-[data-role="codex-tern.toc.head"] { color: var(--t1); font-size: 12px; font-weight: 600; }
-[data-role="codex-tern.toc.head"] > .sf-icon { width: 14px; height: 14px; color: var(--t2); }
-[data-role="codex-tern.toc.status"] { font-size: 12px; font-weight: 400; color: var(--t2); }
-[data-role="codex-tern.toc.body"] { gap: 3px; }
+[data-role="codex-tern.toc.head"] { padding: 2px 6px 12px; color: var(--t3); font-size: 12px; }
+[data-role="codex-tern.toc.head"] > .sf-icon { width: 14px; height: 14px; color: var(--t3); }
+[data-role="codex-tern.toc.status"] { font-size: 12px; color: var(--t3); }
+[data-role="codex-tern.toc.body"] { gap: 2px; }
 [data-role="codex-tern.toc.topic"], [data-role="codex-tern.toc.child"] {
-  padding: 4px 3px; border-radius: 6px; min-width: 0;
+  min-width: 0; gap: 6px; cursor: pointer;
 }
-[data-role="codex-tern.toc.topic"] { margin-top: 8px; color: var(--t1); font-weight: 700; }
-[data-role="codex-tern.toc.child"] { padding-left: 23px; color: var(--t1); font-size: 14px; font-weight: 500; }
-[data-role="codex-tern.toc.topic"]:hover, [data-role="codex-tern.toc.child"]:hover {
-  background: color-mix(in srgb, var(--accent) 9%, var(--card));
-}
-[data-role="codex-tern.toc.topic"][data-mark="pick"], [data-role="codex-tern.toc.child"][data-mark="pick"] {
-  background: color-mix(in srgb, var(--accent) 18%, var(--card));
-  box-shadow: inset 3px 0 0 var(--accent);
-}
-[data-role="codex-tern.toc.child"][data-mark="pick"] { font-weight: 600; }
-[data-role="codex-tern.toc.fold"] { width: 14px; height: 24px; color: var(--t1); flex-shrink: 0; cursor: pointer; }
+[data-role="codex-tern.toc.child"] { padding-left: 26px; }
+[data-role="codex-tern.toc.fold"] { width: 14px; height: 22px; color: var(--t3); flex-shrink: 0; cursor: pointer; }
 [data-role="codex-tern.toc.link"] { min-width: 0; cursor: pointer; }
-[data-role="codex-tern.toc.label"] { overflow-wrap: anywhere; }
+[data-role="codex-tern.toc.label"] { min-width: 0; max-width: 100%; }
 [data-role="codex-tern.toc.visits"] {
-  flex-shrink: 0; color: var(--t1); font-size: 12px; line-height: 20px; font-weight: 600; cursor: pointer;
-  padding: 1px 6px; border-radius: 5px; background: color-mix(in srgb, var(--accent) 12%, var(--card));
+  flex-shrink: 0; color: var(--t3); font-size: 12px; line-height: 22px; cursor: pointer;
+  padding: 0 4px; border-radius: 7px;
 }
+[data-role="codex-tern.toc.visits"]:hover { background: var(--raise); }
 [data-role="codex-tern.toc.footer"] { gap: 6px; }
-[data-role="codex-tern.toc.note"] { color: var(--t2); font-size: 13px; }
+[data-role="codex-tern.toc.note"] { padding: 8px; color: var(--t3); font-size: 12px; }
 [data-role="codex-tern.toc.get"] {
-  align-self: flex-start; padding: 4px 10px; border-radius: 6px; color: var(--t1); font-weight: 600;
-  background: color-mix(in srgb, var(--accent) 18%, var(--card)); cursor: pointer; font-size: 13px;
+  align-self: flex-start; padding: 6px; border-radius: 7px; cursor: pointer;
 }
+[data-role="codex-tern.toc.get"]:hover { background: var(--l2); }
 [data-role="codex-tern.toc.get"][data-mark="disabled"] { opacity: .5; cursor: default; }
 [data-role="codex-tern.toc.label"][data-mark="reveal"] { animation: ct-toc-reveal 240ms ease-out both; }
 @keyframes ct-toc-reveal {

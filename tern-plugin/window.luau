@@ -40,7 +40,7 @@ end
 
 local function view(snapshot, selection, reveals)
   local rows = {}
-  local current = if selection then selection.id else snapshot.current
+  local current = snapshot.current
   local folder = string.match(snapshot.cwd or "", "([^/]+)/*$") or snapshot.cwd or "Sessions"
   table.insert(rows, {k = "text", p = {key = "folder", role = "codex-tern.sessions.folder", text = folder, title = snapshot.cwd}})
   table.insert(rows, {k = "row", p = {key = "new", role = "codex-tern.sessions.new", align = "center", gap = "sm",
@@ -65,7 +65,7 @@ local function view(snapshot, selection, reveals)
       table.insert(title.c, {k = "icon", p = {key = "status", name = "lock", role = "codex-tern.sessions.lock", title = "Open in another client"}})
     elseif item.waiting then
       table.insert(title.c, {k = "icon", p = {key = "status", name = "bell", role = "codex-tern.sessions.waiting", title = "Needs your input"}})
-    elseif item.running and (not selection or item.id ~= current or selection.running) then
+    elseif item.running then
       table.insert(title.c, {k = "spinner", p = {key = "status", role = "codex-tern.sessions.running", title = "Working"}})
     elseif item.failed then
       table.insert(title.c, {k = "icon", p = {key = "status", name = "warn", role = "codex-tern.sessions.failed", title = "Task failed · Open to review"}})
@@ -73,7 +73,8 @@ local function view(snapshot, selection, reveals)
       table.insert(title.c, {k = "icon", p = {key = "status", name = "check", role = "codex-tern.sessions.completed", title = "Task complete · Unread"}})
     end
     table.insert(rows, {k = "col", p = {key = item.id, role = "codex-tern.sessions.item",
-      mark = if item.id == current then "pick" elseif locked then "locked" else nil,
+      mark = if item.id == current then "pick" elseif locked then "locked"
+        elseif selection and item.id == selection.id then "pending" else nil,
       title = item.title, actions = {click = if locked then nil else "resume=" .. item.id,
         menu = {"Rename session", "Delete session"}}}, c = {
         title,
@@ -83,6 +84,7 @@ local function view(snapshot, selection, reveals)
   if note == nil or note == "" then
     if snapshot.connecting then note = "Connecting…"
     elseif not snapshot.connected then note = "Codex disconnected."
+    elseif selection and selection.id ~= current then note = "Opening session…"
     elseif snapshot.loading and #snapshot.rows == 0 then note = "Loading…"
     elseif #snapshot.rows == 0 then note = "No sessions in this folder."
     elseif not snapshot.canSwitch then note = snapshot.blockedReason end
@@ -332,15 +334,15 @@ tern.on("canvas_action", function(ev, cx)
     local state = bridge(cx, entry.target)
     if state then
       local found = false
-      local running = false
       for _, row in state.snapshot.rows do
-        if row.id == ev.value and not row.locked then found = true; running = row.running; break end
+        if row.id == ev.value and not row.locked then found = true; break end
       end
       if found then
         selection_seq += 1
         local request = tostring(tern.now()) .. ":" .. tostring(selection_seq)
-        entry.selection = {id = ev.value, request = request, started = tern.now(), running = running}
-        -- Paint before waiting for history, client rendering or the next poll.
+        entry.selection = {id = ev.value, request = request, started = tern.now()}
+        -- Show the pending destination immediately; the active row still matches
+        -- the transcript and TOC until the client commits the session change.
         paint(cx, ev.pane, entry, state.snapshot)
         local value = if state.snapshot.navigationProtocol == 1
           then tern.json.encode({id = ev.value, request = request}) else ev.value

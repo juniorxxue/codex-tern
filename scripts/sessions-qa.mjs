@@ -231,15 +231,19 @@ try {
   const activityOrder = tree('[data-role="codex-tern.sessions.item"]').map(n => n.title);
   ctl('shot project-two-running-sessions');
   const feedback = [];
+  const pending = '[data-role="codex-tern.sessions.item"][data-mark="pending"]';
   for (const title of ['Saved session 4', 'Saved session 5', 'QA session 1', 'Saved session 7']) {
     const start = performance.now();
     click(row(title));
-    await waitFast(() => tree(selected).some(n => n.title === title), `immediate highlight: ${title}`);
+    await waitFast(() => [...tree(selected), ...tree(pending)].some(n => n.title === title), `immediate selection feedback: ${title}`);
     const ms = Math.round(performance.now() - start);
     feedback.push({ title, ms });
     assert.ok(ms < 300, `selection feedback took ${ms} ms`);
-    assert.equal(tree(selected).length, 1, 'only the last clicked row is highlighted');
+    assert.equal(tree(selected).length, 1, 'only the loaded session has the active highlight');
+    assert.ok(tree(pending).length <= 1, 'only the latest destination is pending');
     if (title === 'Saved session 4' || title === 'Saved session 5') {
+      assert.equal(tree(selected)[0].title, 'QA session 1', 'the active highlight stays with the loaded transcript');
+      assert.equal(tree(pending)[0].title, title);
       await waitFast(() => text('[data-role="ct.working"] .sf-text').includes('Opening session'), 'plain session loading status');
       for (let sample = 0; sample < 3; sample++) {
         assert.equal(tree(`${row(title)} .sf-spinner`).length, 0, 'selecting an idle session never starts an animation');
@@ -260,7 +264,8 @@ try {
   assert.deepEqual(tree('[data-role="codex-tern.sessions.item"]').map(n => n.title), activityOrder);
   await writeFile(resolve(out, 'selection-feedback.json'), JSON.stringify({ delayedResumeMs: 750, feedback }, null, 2));
   console.log(`Selection feedback: ${feedback.map(x => x.ms).join(', ')} ms`);
-  pass('selection responds before slow history loads, rolls back on failure, and rapid clicks keep only the latest highlight while two tasks run');
+  assert.equal(tree(pending).length, 0);
+  pass('pending destinations respond immediately; active selection stays with the loaded session through failures and rapid clicks');
   click(row('Saved session 7'));
   await wait(() => text(selected).includes('Saved session 7'), 'return to first running task');
   assert.ok(text('.ct-activity').includes('Working'));

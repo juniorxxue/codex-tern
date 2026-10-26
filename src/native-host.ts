@@ -21,7 +21,7 @@ export async function loadNativeUI(manifest = new URL('../dist/ui.json', import.
 }
 
 function validate(module: UIModule) {
-  if (module.UI_API_VERSION !== 3 || typeof module.NativeUI !== 'function')
+  if (module.UI_API_VERSION !== 4 || typeof module.NativeUI !== 'function')
     throw new Error('This update needs a client restart. Finish running tasks, then restart codex-tern.');
 }
 

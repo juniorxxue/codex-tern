@@ -13,10 +13,14 @@ Notable changes, newest first. This log starts with the update below.
 - Projects open the sessions sidebar while the selected conversation loads.
 - The first session list loads from the index, then refreshes in the background to update stale details and find missing sessions.
 - Account details load in the background, so conversations can become usable before those details arrive.
-- TOC headings, active topics and return-visit controls are easier to read. Long outlines fit the card as it resizes.
+- The TOC matches the session explorer's compact rows, muted headings and neutral selection background. Long outlines fit the card as it resizes.
 
 ### Fixed
 
+- Clicking a TOC heading keeps it selected until the reading position changes, including short conversations and headings that share a prompt.
+- Short prompts keep their reading highlight until they leave the top of the viewport.
+- Topic return buttons advance correctly when the active prompt belongs to a child heading.
+- Opening a session marks its row as pending while the active highlight stays aligned with the current transcript and TOC.
 - Clicking **Load more** during the initial background refresh keeps the request and uses the updated page position.
 - Account replies from an old connection no longer overwrite current account details.
 - Session-list replies from a previous folder or connection are ignored.

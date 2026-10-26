@@ -6,6 +6,7 @@ import { runPluginCommand } from './tern-plugin';
 
 export type ReadingRequest = { token: string; lines: number; relative?: boolean; threadId?: string };
 type Anchor = { id: string; offset: number };
+export type ReadingView = { anchor: Anchor; following: boolean; tail?: string };
 type Position = { following: true } | { following: false; anchor: Anchor };
 type Element = { class?: string; rect: number[] };
 export const readingAnchorClass = (id: string) => `ct-reading-node-${Buffer.from(id).toString('base64url')}`;
@@ -54,14 +55,23 @@ export function readingFocus(nodes: readonly Element[]) {
     } else if (inside && view && anchorId(node)) view.nodes.push(node);
   }
   if (!view || view.grid.rect[3]! <= 0 || view.bottom <= view.grid.rect[1]!) return;
-  const line = view.grid.rect[1]! + Math.min(80, (view.bottom - view.grid.rect[1]!) / 4);
+  const top = view.grid.rect[1]!;
   const visible = view.nodes.filter(n => n.rect[3]! > 0);
-  // At the live end the newest prompt owns the focus. While reading history,
-  // use the upper part of the viewport, including a reply that starts above it.
-  const node = view.following ? visible.at(-1) : visible.find(n => n.rect[1]! + n.rect[3]! > line && n.rect[1]! < view!.bottom);
-  // TOC labels use a 24px line height. Reserve padding and any retry/error footer.
-  const lines = toc && Math.max(1, Math.floor((toc.grid.rect[1]! + toc.grid.rect[3]! - toc.body.rect[1]! - toc.footer - 14) / 24));
-  return { node: node && anchorId(node), lines };
+  // Do not skip a short prompt at the top in favour of the next prompt below it.
+  const first = visible.find(n => n.rect[1]! + n.rect[3]! > top + 1 && n.rect[1]! < view!.bottom);
+  const tail = visible.at(-1), node = view.following ? tail : first;
+  const position: ReadingView | undefined = first ? { anchor: { id: anchorId(first)!, offset: first.rect[1]! - top },
+    following: view.following, tail: tail && anchorId(tail) } : undefined;
+  // Match the session explorer's 22px line height; leave room for the footer.
+  const lines = toc && Math.max(1, Math.floor((toc.grid.rect[1]! + toc.grid.rect[3]! - toc.body.rect[1]! - toc.footer - 14) / 22));
+  return { node: node && anchorId(node), lines, position,
+    visible: visible.filter(n => n.rect[1]! + n.rect[3]! > top && n.rect[1]! < view!.bottom).map(n => anchorId(n)!) };
+}
+
+/** Pane movement is not scrolling; compare an anchor relative to its own viewport. */
+export function sameReadingView(a: ReadingView, b: ReadingView) {
+  return a.anchor.id === b.anchor.id && Math.abs(a.anchor.offset - b.anchor.offset) <= 1
+    && a.following === b.following && (!a.following || a.tail === b.tail);
 }
 
 async function elements(selector: string): Promise<Element[] | undefined> {

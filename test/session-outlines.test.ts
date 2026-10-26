@@ -108,7 +108,7 @@ test('reading a reply follows its subtopic until a detour or a new visit opens',
   const locations = outlineLocations({ topics: [rules, topic('build', 'Build', 'e')], anchors: ['before', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] });
   assert.equal(locations.get('before'), undefined);
   assert.deepEqual(locations.get('b'), { nodeId: 'rules', visit: 0 });
-  assert.deepEqual(locations.get('d'), { nodeId: 'counter', visit: 0 });
+  assert.deepEqual(locations.get('d'), { nodeId: 'counter', visit: 0, parent: { nodeId: 'rules', visit: 0 } });
   assert.deepEqual(locations.get('f'), { nodeId: 'build', visit: 0 });
   assert.deepEqual(locations.get('h'), { nodeId: 'rules', visit: 1 });
 });
@@ -119,10 +119,21 @@ test('shared opening prompts prefer a stable specific heading; new revisions rep
   const source = [turn('a', 'Rule A'), turn('b', 'Follow-up')];
   await outlines.update('chat', model, source);
   await done(0, [topic('rule', 'Rule A', 'a:user', [leaf('first', 'First rule', 'a:user'), leaf('second', 'Second rule', 'a:user')])]);
-  assert.deepEqual(outlines.location('chat', 'b:user'), { nodeId: 'first', visit: 0 });
+  assert.deepEqual(outlines.location('chat', 'b:user'), { nodeId: 'first', visit: 0, parent: { nodeId: 'rule', visit: 0 } });
   await outlines.update('chat', model, [...source, turn('c', 'More evidence')]);
   await done(1, [topic('merged', 'Combined rule', 'a:user')]);
   assert.deepEqual(outlines.location('chat', 'b:user'), { nodeId: 'merged', visit: 0 });
+});
+
+test('a highlighted child retains its parent visit across shared prompts and detours', () => {
+  const rules = topic('rules', 'Rules', 'a', [leaf('first', 'First question', 'a'), leaf('second', 'Second question', 'd')]);
+  rules.anchors.push('d', 'g');
+  const locations = outlineLocations({ topics: [rules, topic('detour', 'Detour', 'c')], anchors: ['a', 'b', 'c', 'd', 'e', 'f', 'g'] });
+  assert.deepEqual(locations.get('b'), { nodeId: 'first', visit: 0, parent: { nodeId: 'rules', visit: 0 } });
+  assert.deepEqual(locations.get('c'), { nodeId: 'detour', visit: 0 });
+  assert.deepEqual(locations.get('d'), { nodeId: 'second', visit: 0, parent: { nodeId: 'rules', visit: 1 } });
+  assert.deepEqual(locations.get('f'), { nodeId: 'second', visit: 0, parent: { nodeId: 'rules', visit: 1 } });
+  assert.deepEqual(locations.get('g'), { nodeId: 'rules', visit: 2 });
 });
 
 test('new evidence supersedes an unfinished revision and preserves full backfills', async t => {

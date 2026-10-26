@@ -52,7 +52,7 @@ function toc.view(snapshot, entry)
     table.insert(row.c, {k = "col", p = {key = "link", grow = 1, role = "codex-tern.toc.link", title = node.title,
       actions = if enabled then {click = "toc-jump=" .. node.id} else nil}, c = {
         {k = "text", p = {key = if reveals[node.id] then "label-" .. reveals[node.id] else "label",
-          role = "codex-tern.toc.label", mark = if reveals[node.id] then "reveal" else nil, text = node.title, lines = 2}},
+          role = "codex-tern.toc.label", mark = if reveals[node.id] then "reveal" else nil, text = node.title, lines = 1}},
       }})
     if node.visits > 1 then
       table.insert(row.c, {k = "text", p = {key = "visits", role = "codex-tern.toc.visits", text = "↩ " .. tostring(node.visits),
@@ -114,7 +114,9 @@ function toc.action(ev, snapshot, entry, send, repaint)
       if not snapshot.connected or not snapshot.canSwitch then return true end
       local visit = 0
       if ev.act == "toc-visit" then
-        local current = if value.location and value.location.nodeId == node.id then value.location.visit else 0
+        local location = value.location
+        local current = if location and location.nodeId == node.id then location.visit
+          elseif location and location.parent and location.parent.nodeId == node.id then location.parent.visit else 0
         visit = (current + 1) % node.visits
       end
       send("toc-jump", tern.json.encode({threadId = value.threadId, revision = value.revision, nodeId = node.id, visit = visit}))

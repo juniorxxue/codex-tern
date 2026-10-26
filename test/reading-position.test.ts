@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ReadingPositions, readingAnchorClass, readingFocus } from '../src/reading-position';
+import { ReadingPositions, readingAnchorClass, readingFocus, sameReadingView } from '../src/reading-position';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const inspection = {
@@ -21,7 +21,7 @@ const readingLayout = (following = false) => [
 test('scroll focus includes the reply crossing the viewport and switches only as the next prompt reaches it', () => {
   const layout = readingLayout();
   assert.equal(readingFocus(layout)?.node, 'main.reading-reply');
-  for (const node of layout) if (node.class.includes('ct-reading-node')) node.rect[1] -= 230;
+  for (const node of layout) if (node.class.includes('ct-reading-node')) node.rect[1] -= 300;
   assert.equal(readingFocus(layout)?.node, 'main.next-prompt');
   for (const node of layout) if (node.class.includes('ct-reading-node')) node.rect[1] -= 100;
   assert.equal(readingFocus(layout)?.node, 'main.next-reply');
@@ -30,10 +30,34 @@ test('scroll focus includes the reply crossing the viewport and switches only as
 
 test('TOC sizing uses its own card and missing or hidden transcript geometry is ignored', () => {
   const layout = [...readingLayout(), element('tv', 300, 200), element('tv-grid', 300, 200), element('sf-list', 342, 100)];
-  assert.deepEqual(readingFocus(layout), { node: 'main.reading-reply', lines: 6 });
+  assert.equal(readingFocus(layout)?.lines, 6);
   assert.equal(readingFocus([...layout, element('sf-col', 450, 38)])?.lines, 4, 'a retry footer keeps its space');
   assert.equal(readingFocus([]), undefined);
   assert.equal(readingFocus([element('tv', 0, 0), element('tv-grid', 0, 0), element('sf-main', 0, 0)]), undefined);
+});
+
+test('adjacent short prompts do not advance the reading topic before the first leaves the viewport', () => {
+  const layout = [element('tv scrolled', 45, 844), element('tv-grid', 55, 834), element('sf-main', 55, 4000),
+    element(`sf-el ${readingAnchorClass('main.first')}`, 55, 49),
+    element(`sf-el ${readingAnchorClass('main.second')}`, 124, 49), element('sf-dock', 743, 136)];
+  assert.equal(readingFocus(layout)?.node, 'main.first');
+  for (const node of layout) if (node.class.includes('ct-reading-node')) node.rect[1] -= 32;
+  assert.equal(readingFocus(layout)?.node, 'main.first', 'partly visible prompt still owns the reading position');
+  for (const node of layout) if (node.class.includes('ct-reading-node')) node.rect[1] -= 32;
+  assert.equal(readingFocus(layout)?.node, 'main.second');
+});
+
+test('reading positions distinguish actual scrolling and new live content from pane movement and background output', () => {
+  const layout = readingLayout(), original = readingFocus(layout)!.position!;
+  for (const node of layout) node.rect[1] += 120;
+  assert.ok(sameReadingView(original, readingFocus(layout)!.position!), 'moving the pane preserves a clicked heading');
+  layout.splice(-1, 0, element(`sf-el ${readingAnchorClass('main.new-reply')}`, 1500, 200));
+  assert.ok(sameReadingView(original, readingFocus(layout)!.position!), 'new output below the reading area does not undo a jump');
+  for (const node of layout) if (node.class.includes('ct-reading-node')) node.rect[1] -= 16;
+  assert.equal(sameReadingView(original, readingFocus(layout)!.position!), false, 'one line of scrolling releases the clicked heading');
+  const live = readingLayout(true), before = readingFocus(live)!.position!;
+  live.splice(-1, 0, element(`sf-el ${readingAnchorClass('main.new-prompt')}`, 900, 60));
+  assert.equal(sameReadingView(before, readingFocus(live)!.position!), false, 'new live input resumes automatic following');
 });
 
 test('late window replies and command failures cannot finish a newer restore', async t => {

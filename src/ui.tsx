@@ -27,7 +27,8 @@ import { assistantParts } from './proposals';
 import { ProposalView } from './proposal-view';
 import { runPluginCommand } from './tern-plugin';
 import { SessionDetails, WorkspaceForm, modelName } from './session-panels';
-import { ReadingPositions, readingAnchorClass, inspectReadingFocus } from './reading-position';
+import { ReadingPositions, readingAnchorClass, inspectReadingFocus, sameReadingView, type ReadingView } from './reading-position';
+import type { OutlineLocation } from './session-outline';
 
 const styles = css`
   .ct-buttons { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -51,7 +52,7 @@ const styles = css`
 `;
 
 // Increment when the retained runtime or reload state needs an incompatible change.
-export const UI_API_VERSION = 3;
+export const UI_API_VERSION = 4;
 export type NativeUIState = ReturnType<NativeUI['reloadState']>;
 
 export class NativeUI {
@@ -103,7 +104,8 @@ export class NativeUI {
   private tocInspecting = false;
   private tocLines?: number;
   private readingPrompts = new Map<string, string>();
-  private tocLocation?: { threadId: string; nodeId: string; visit: number };
+  private tocLocation?: OutlineLocation & { threadId: string };
+  private tocSelections = new Map<string, { revision: string; location: OutlineLocation; anchor: string; prompt: string; position?: ReadingView }>();
   private tocError?: { threadId: string; message: string };
   openProject?: (cwd: string, resume?: string) => Promise<boolean>;
   private readonly projectDirectory: string;
@@ -150,7 +152,7 @@ export class NativeUI {
     if (!target || this.c.thread?.id !== threadId) return;
     const token = ++this.tocJump;
     const current = () => !this.ended && this.tocJump === token && this.c.thread?.id === threadId;
-    this.tocError = undefined; this.tocJumping = true;
+    this.tocError = undefined; this.tocJumping = true; this.tocSelections.delete(threadId);
     try {
       while (current() && !this.c.items.some(i => i.id === target) && this.c.historyCursor) {
         const before = this.c.historyCursor;
@@ -163,8 +165,19 @@ export class NativeUI {
       // Steering cards use client IDs to retain their identity after server acknowledgement.
       const key = entry.item.type === 'userMessage' && entry.item.clientId
         ? `${entry.turnId}:client:${entry.item.clientId}` : entry.id;
-      this.tocLocation = { threadId, nodeId, visit }; this.render();
-      await this.readingPositions.jump(threadId, `main.${key}`, current);
+      const parent = this.c.outlineLocation(threadId, target)?.parent;
+      const parentId = this.c.outline?.topics.find(topic => topic.children.some(child => child.id === nodeId))?.id;
+      const location: OutlineLocation = { nodeId, visit, ...(parent?.nodeId === parentId && parent ? { parent } : {}) };
+      this.tocLocation = { threadId, ...location }; this.render();
+      const anchor = `main.${key}`;
+      await this.readingPositions.jump(threadId, anchor, current);
+      if (!current()) return;
+      const focus = await inspectReadingFocus(`ct.transcript.${this.clientInstance}`, this.clientInstance);
+      // A user may scroll while the native jump or its inspection is finishing.
+      // Only retain the click if its prompt is still the place being read.
+      if (current() && (!focus || (focus.visible.includes(anchor)
+        && (focus.position?.following || (focus.node && this.readingPrompts.get(focus.node) === target)))))
+        this.tocSelections.set(threadId, { revision, location, anchor, prompt: target, position: focus?.position });
     } catch {
       if (current()) { this.tocError = { threadId, message: 'Could not locate this prompt. Rebuild TOC or try again.' }; this.render(); }
     } finally { if (this.tocJump === token) this.tocJumping = false; }
@@ -182,7 +195,18 @@ export class NativeUI {
         || this.tocJumping || this.tocJump !== jump || this.c.thread?.id !== threadId || this.c.outline?.revision !== revision) return;
       const prompt = focus.node && prompts.get(focus.node);
       const location = prompt ? this.c.outlineLocation(threadId, prompt) : undefined;
-      const next = location && { threadId, ...location };
+      let next = location && { threadId, ...location };
+      const selected = this.tocSelections.get(threadId);
+      if (selected) {
+        if (selected.revision !== revision
+          || (selected.position && focus.position && !sameReadingView(selected.position, focus.position))
+          || (!selected.position && (!focus.visible.includes(selected.anchor) || (!focus.position?.following && prompt !== selected.prompt))))
+          this.tocSelections.delete(threadId);
+        else {
+          selected.position ??= focus.position;
+          next = { threadId, ...selected.location };
+        }
+      }
       if (JSON.stringify(this.tocLocation) !== JSON.stringify(next) || this.tocLines !== focus.lines) {
         this.tocLocation = next; this.tocLines = focus.lines; this.render();
       }
@@ -191,7 +215,7 @@ export class NativeUI {
 
   assertReloadable() {
     if (this.ended) throw new Error('This window is closed.');
-    if (this.pasting || this.pendingActions || this.c.operation || this.c.selecting || this.navigating
+    if (this.pasting || this.pendingActions || this.c.operation || this.c.selecting || this.navigating || this.tocJumping
       || this.renaming?.saving || this.historyLoading || this.sidebarRequested)
       throw new Error('Wait for the current input or session action to finish, then reload the window.');
   }
@@ -206,7 +230,8 @@ export class NativeUI {
       focused: this.focused, visible: this.visible, sendMode: this.sendMode,
       activityModes: this.activityModes, proposalSelections: this.proposalSelections, proposalDrafts: this.proposalDrafts,
       previews: this.previews, failedPreviews: this.failedPreviews, folder: this.folderSessions.reloadState(),
-      reading: this.readingPositions.saved, tocLocation: this.tocLocation, tocError: this.tocError, tocLines: this.tocLines };
+      reading: this.readingPositions.saved, tocLocation: this.tocLocation, tocSelections: this.tocSelections,
+      tocError: this.tocError, tocLines: this.tocLines };
   }
 
   private requestReload() {
@@ -306,7 +331,7 @@ export class NativeUI {
     const at = rows.findIndex(row => row.id === id);
     const replacement = [...rows.slice(at + 1), ...rows.slice(0, at).reverse()].find(row => !row.locked)?.id;
     if (await this.navigate(() => this.c.archiveThread(id, replacement))) {
-      this.sessionDrafts.delete(id); this.readingPositions.saved.delete(id);
+      this.sessionDrafts.delete(id); this.readingPositions.saved.delete(id); this.tocSelections.delete(id);
     }
   }
   private openRenameSession(id?: string) {
