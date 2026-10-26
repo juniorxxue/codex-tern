@@ -5,6 +5,7 @@ import type { Turn } from './generated/v2/Turn';
 
 export interface OutlineNode { id: string; title: string; summary: string; anchors: string[] }
 export interface OutlineTopic extends OutlineNode { children: OutlineNode[] }
+export interface OutlineLocation { nodeId: string; visit: number }
 export interface OutlineMessage { role: 'user' | 'assistant'; anchor: string; text: string }
 export interface OutlineTurn { id: string; status: string; messages: OutlineMessage[] }
 export interface OutlineRecord {
@@ -12,6 +13,30 @@ export interface OutlineRecord {
   anchors: string[]; fingerprints: Record<string, string>; recent: OutlineTurn[];
 }
 export const outlineHash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+/** Opening prompts partition the conversation, including detours and later visits. */
+export function outlineLocations(value: Pick<OutlineRecord, 'topics' | 'anchors'>) {
+  const openings = new Map<string, OutlineLocation>();
+  for (const topic of value.topics) {
+    for (const [visit, anchor] of topic.anchors.entries())
+      if (!openings.has(anchor)) openings.set(anchor, { nodeId: topic.id, visit });
+  }
+  // Prefer a specific subtopic when it shares its parent's opening prompt.
+  // Multiple children sharing a prompt keep the first heading in display order.
+  const children = new Set<string>();
+  for (const topic of value.topics) for (const child of topic.children)
+    for (const [visit, anchor] of child.anchors.entries()) {
+      if (!children.has(anchor)) openings.set(anchor, { nodeId: child.id, visit });
+      children.add(anchor);
+    }
+  const locations = new Map<string, OutlineLocation>();
+  let current: OutlineLocation | undefined;
+  for (const anchor of value.anchors) {
+    current = openings.get(anchor) ?? current;
+    if (current) locations.set(anchor, current);
+  }
+  return locations;
+}
 
 const nodeProperties = {
   id: { type: 'string', pattern: '^[a-zA-Z0-9_-]{1,48}$' },

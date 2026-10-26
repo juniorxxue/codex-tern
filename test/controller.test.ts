@@ -15,6 +15,7 @@ class Transport extends EventEmitter {
   respond(id: any, result: any) { this.responses.push({ id, result }); }
   rejectRequest(id: any, message: string) { this.errors.push({ id, message }); }
   async start() {}
+  async restart() { this.connected = true; }
 }
 function setup() {
   const transport = new Transport();
@@ -35,6 +36,79 @@ function deferred<T = any>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
+
+test('models gate session creation while a slow account read follows later session selections', async () => {
+  const t = new Transport(), c = new Controller(t as unknown as CodexRpc, process.cwd());
+  const account = deferred(), models = deferred();
+  let seq = 0;
+  t.handler = async method => {
+    if (method === 'account/read') return account.promise;
+    if (method === 'model/list') return models.promise;
+    if (method === 'thread/start') return { thread: { id: `new-${++seq}`, cwd: process.cwd() }, cwd: process.cwd() };
+    throw new Error(`Unexpected method: ${method}`);
+  };
+  const connecting = c.connect(); await tick();
+  assert.equal(t.calls.some(call => call.method === 'thread/start'), false);
+  models.resolve({ data: [{ id: 'available', model: 'available' }] });
+  await connecting;
+  assert.equal(c.sessionReady, true);
+  assert.equal(c.account, 'Reading account…');
+  assert.equal(c.models[0].id, 'available');
+  await c.newThread();
+  account.resolve({ account: { type: 'chatgpt', planType: 'plus' } }); await tick();
+  assert.equal(c.account, 'ChatGPT · plus');
+  await c.resume('new-1');
+  assert.equal(c.account, 'ChatGPT · plus', 'a late account reply updates loaded background sessions too');
+  assert.equal(t.calls.some(call => call.method.startsWith('turn/')), false);
+});
+
+test('account failures do not delay or disable the ready session', async () => {
+  const t = new Transport(), c = new Controller(t as unknown as CodexRpc, process.cwd());
+  const account = deferred();
+  t.handler = async method => method === 'account/read' ? account.promise : method === 'model/list'
+    ? { data: [] } : { thread: { id: 'new', cwd: process.cwd() }, cwd: process.cwd() };
+  await c.connect();
+  account.reject(new Error('Account unavailable')); await tick();
+  assert.equal(c.account, 'Account unavailable');
+  assert.equal(c.sessionReady, true);
+  assert.equal(c.thread?.id, 'new');
+});
+
+test('old account replies and failures cannot overwrite a reconnected account', async () => {
+  for (const fail of [false, true]) {
+    const t = new Transport(), c = new Controller(t as unknown as CodexRpc, process.cwd());
+    const old = deferred(); let reads = 0;
+    t.handler = async (method, params) => {
+      if (method === 'account/read') return ++reads === 1 ? old.promise : { account: { type: 'chatgpt', planType: 'pro' } };
+      if (method === 'thread/start' || method === 'thread/resume')
+        return { thread: { id: params.threadId ?? 'new', cwd: process.cwd() }, cwd: process.cwd() };
+      return { data: [], nextCursor: null };
+    };
+    await c.connect(); t.emit('disconnected', 'Disconnected');
+    await c.reconnect();
+    if (fail) old.reject(new Error('Old read failed'));
+    else old.resolve({ account: { type: 'chatgpt', planType: 'old' } });
+    await tick();
+    assert.equal(c.account, 'ChatGPT · pro');
+    assert.equal(c.sessionReady, true);
+  }
+});
+
+test('disconnecting or closing during metadata loading cannot create a session or publish late account text', async () => {
+  for (const event of ['disconnected', 'closing']) {
+    const t = new Transport(), c = new Controller(t as unknown as CodexRpc, process.cwd());
+    const models = deferred(), account = deferred();
+    t.handler = async method => method === 'account/read' ? account.promise : models.promise;
+    const connecting = c.connect(); await tick();
+    t.emit(event, 'Disconnected'); c.connection = 'disconnected';
+    models.resolve({ data: [] });
+    await assert.rejects(connecting, /disconnected while connecting/);
+    account.resolve({ account: { type: 'test' } }); await tick();
+    assert.equal(c.connection, 'disconnected');
+    assert.equal(c.account, 'Reading account…');
+    assert.equal(t.calls.some(call => call.method === 'thread/start'), false);
+  }
+});
 
 test('archive replacement retains approvals received before resume replies, even if archive fails', async () => {
   for (const failArchive of [false, true]) {

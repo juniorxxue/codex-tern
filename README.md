@@ -32,4 +32,4 @@ codex-tern
 codex-tern -C /path/to/project
 ```
 
-[Usage and appearance](docs/usage.md) · [Writing proposal format](docs/proposals.md) · [Development](docs/development.md)
+[Usage and appearance](docs/usage.md) · [Writing proposal format](docs/proposals.md) · [Changelog](CHANGELOG.md) · [Development](docs/development.md)

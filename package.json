@@ -20,6 +20,7 @@
     "test:ui": "bun scripts/ui-qa.mjs",
     "test:proposals": "bun scripts/proposals-qa.mjs",
     "test:sessions": "bun scripts/sessions-qa.mjs",
+    "test:startup": "bun scripts/startup-qa.mjs",
     "test:reading-position": "bun scripts/reading-position-qa.mjs",
     "test:session-actions": "bun scripts/session-actions-qa.mjs",
     "test:session-titles": "bun scripts/session-titles-qa.mjs",

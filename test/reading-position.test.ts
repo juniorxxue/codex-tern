@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ReadingPositions } from '../src/reading-position';
+import { ReadingPositions, readingAnchorClass, readingFocus } from '../src/reading-position';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const inspection = {
@@ -8,6 +8,33 @@ const inspection = {
   offset: async () => undefined,
   following: async () => false,
 };
+
+const element = (name: string, y: number, height: number) => ({ class: name, rect: [0, y, 800, height] });
+const readingLayout = (following = false) => [
+  element(`tv${following ? '' : ' scrolled'}`, 100, 600), element('tv-grid', 100, 600), element('sf-main', -500, 1300),
+  element(`sf-el ${readingAnchorClass('main.old-reply')}`, -500, 400),
+  element(`sf-el ${readingAnchorClass('main.reading-reply')}`, -100, 500),
+  element(`sf-el ${readingAnchorClass('main.next-prompt')}`, 400, 60),
+  element(`sf-el ${readingAnchorClass('main.next-reply')}`, 460, 400), element('sf-dock', 600, 100),
+];
+
+test('scroll focus includes the reply crossing the viewport and switches only as the next prompt reaches it', () => {
+  const layout = readingLayout();
+  assert.equal(readingFocus(layout)?.node, 'main.reading-reply');
+  for (const node of layout) if (node.class.includes('ct-reading-node')) node.rect[1] -= 230;
+  assert.equal(readingFocus(layout)?.node, 'main.next-prompt');
+  for (const node of layout) if (node.class.includes('ct-reading-node')) node.rect[1] -= 100;
+  assert.equal(readingFocus(layout)?.node, 'main.next-reply');
+  assert.equal(readingFocus(readingLayout(true))?.node, 'main.next-reply');
+});
+
+test('TOC sizing uses its own card and missing or hidden transcript geometry is ignored', () => {
+  const layout = [...readingLayout(), element('tv', 300, 200), element('tv-grid', 300, 200), element('sf-list', 342, 100)];
+  assert.deepEqual(readingFocus(layout), { node: 'main.reading-reply', lines: 6 });
+  assert.equal(readingFocus([...layout, element('sf-col', 450, 38)])?.lines, 4, 'a retry footer keeps its space');
+  assert.equal(readingFocus([]), undefined);
+  assert.equal(readingFocus([element('tv', 0, 0), element('tv-grid', 0, 0), element('sf-main', 0, 0)]), undefined);
+});
 
 test('late window replies and command failures cannot finish a newer restore', async t => {
   const rejections: ((error: Error) => void)[] = [];

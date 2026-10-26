@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { findExecutable } from './launch';
 import { runPluginCommand } from './tern-plugin';
 
@@ -12,6 +13,56 @@ const quoted = (value: string) => '"' + value.replace(/[\\"\x00-\x1f\x7f]/g, c =
 const mainSelector = (role: string) => `.sf-main[data-role=${quoted(role)}]`;
 const nodeSelector = (role: string, id: string) => `${mainSelector(role)} > [data-id=${quoted(id)}]`;
 const hasClass = (node: Element, name: string) => node.class?.split(' ').includes(name);
+const anchorId = (node: Element) => {
+  const encoded = node.class?.match(/(?:^| )ct-reading-node-([\w-]+)(?: |$)/)?.[1];
+  return encoded && Buffer.from(encoded, 'base64url').toString('utf8');
+};
+const execAsync = promisify(execFile);
+
+/** Geometry only: no focus, reveal, scrolling, or transcript writes. */
+export async function inspectReadingFocus(role: string, client: string) {
+  const tern = findExecutable('tern');
+  if (!tern) return;
+  const main = mainSelector(role);
+  const toc = `[data-role="codex-tern.toc"][data-mark=${quoted(client)}]`;
+  try {
+    const { stdout } = await execAsync(tern, ['ctl', `tree .tv, .tv-grid, ${main}, ${main} > .sf, .sf-dock, ${toc} > [data-role="codex-tern.toc.body"], ${toc} > [data-role="codex-tern.toc.footer"]`],
+      { timeout: 750, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' });
+    const reply = JSON.parse(stdout);
+    if (reply.ok && Array.isArray(reply.nodes) && reply.nodes.every((n: Element) =>
+      Array.isArray(n.rect) && n.rect.length === 4 && n.rect.every(Number.isFinite))) return readingFocus(reply.nodes);
+  } catch { /* Optional navigation aid; unavailable inspection leaves the last selection intact. */ }
+}
+
+/** Input is the ordered result of the selector above, from one native layout. */
+export function readingFocus(nodes: readonly Element[]) {
+  let terminal: Element | undefined, grid: Element | undefined;
+  let view: { following: boolean; grid: Element; bottom: number; nodes: Element[] } | undefined;
+  let inside = false, toc: { grid: Element; body: Element; footer: number } | undefined;
+  for (const node of nodes) {
+    if (hasClass(node, 'tv')) { terminal = node; inside = false; }
+    else if (hasClass(node, 'tv-grid')) grid = node;
+    else if (hasClass(node, 'sf-main') && terminal && grid) {
+      view = { following: !hasClass(terminal, 'scrolled'), grid, bottom: grid.rect[1]! + grid.rect[3]!, nodes: [] };
+      inside = true;
+    } else if (hasClass(node, 'sf-dock') && inside && view) {
+      view.bottom = Math.min(view.bottom, node.rect[1]!); inside = false;
+    } else if (hasClass(node, 'sf-list') && grid) {
+      toc = { grid, body: node, footer: 0 };
+    } else if (hasClass(node, 'sf-col') && toc && grid === toc.grid && node.rect[3]! > 0) {
+      toc.footer = node.rect[3]! + 10;
+    } else if (inside && view && anchorId(node)) view.nodes.push(node);
+  }
+  if (!view || view.grid.rect[3]! <= 0 || view.bottom <= view.grid.rect[1]!) return;
+  const line = view.grid.rect[1]! + Math.min(80, (view.bottom - view.grid.rect[1]!) / 4);
+  const visible = view.nodes.filter(n => n.rect[3]! > 0);
+  // At the live end the newest prompt owns the focus. While reading history,
+  // use the upper part of the viewport, including a reply that starts above it.
+  const node = view.following ? visible.at(-1) : visible.find(n => n.rect[1]! + n.rect[3]! > line && n.rect[1]! < view!.bottom);
+  // TOC labels use a 24px line height. Reserve padding and any retry/error footer.
+  const lines = toc && Math.max(1, Math.floor((toc.grid.rect[1]! + toc.grid.rect[3]! - toc.body.rect[1]! - toc.footer - 14) / 24));
+  return { node: node && anchorId(node), lines };
+}
 
 async function elements(selector: string): Promise<Element[] | undefined> {
   const tern = findExecutable('tern');
@@ -63,8 +114,7 @@ async function capturePosition(role: string, ids: readonly string[]): Promise<Po
   if (!target) return;
   // Read identity and geometry together, before typing or background output
   // can change the native viewport. Keys also survive history being prepended.
-  const encoded = target.class?.match(/(?:^| )ct-reading-node-([\w-]+)(?: |$)/)?.[1];
-  const id = encoded && Buffer.from(encoded, 'base64url').toString('utf8');
+  const id = anchorId(target);
   if (id && ids.includes(id)) return { following: false, anchor: { id, offset: target.rect[1]! - grid.rect[1]! } };
 }
 

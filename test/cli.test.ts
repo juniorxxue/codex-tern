@@ -30,6 +30,7 @@ async function fixture(t: any) {
   const project = join(cwd, 'project with spaces');
   const programs = join(dir, 'bin');
   const log = join(dir, 'launched.json');
+  const state = join(dir, 'state');
   await mkdir(project, { recursive: true });
   await mkdir(programs);
   const codex = join(programs, 'codex');
@@ -45,7 +46,7 @@ process.exit(Number(process.env.QA_TERN_EXIT ?? '0'));
 `);
   await chmod(tern, 0o755);
   const env = { ...process.env, PATH: [programs, dirname(process.execPath)].join(delimiter),
-    CODEX_BINARY: codex, TERN_TSP: '0', QA_LOG: log };
+    CODEX_BINARY: codex, TERN_TSP: '0', QA_LOG: log, XDG_STATE_HOME: state };
   const run = (args: string[], overrides: Record<string, string> = {}) => new Promise<{ code: number | null; output: string }>((done, reject) => {
     const child = spawn(process.execPath, [cli, ...args], { cwd, env: { ...env, ...overrides }, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
@@ -54,7 +55,7 @@ process.exit(Number(process.env.QA_TERN_EXIT ?? '0'));
     child.on('error', reject);
     child.on('exit', code => done({ code, output }));
   });
-  return { run, log, project, codex, programs };
+  return { run, log, project, codex, programs, state };
 }
 
 test('session commands do not start Codex, register the bundled plugin and preserve literal prompts', async t => {
@@ -147,7 +148,7 @@ test('explicit text mode submits the initial prompt unchanged without opening Te
   const backend = resolve(import.meta.dirname, 'fixtures/ui-app-server.mjs');
   const result = await new Promise<{ code: number | null; output: string }>((done, reject) => {
     const child = spawn(process.execPath, [cli, '--plain', '--codex', backend, prompt], {
-      cwd: f.project, env: { ...process.env, TERN_TSP: '0' }, stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: f.project, env: { ...process.env, TERN_TSP: '0', XDG_STATE_HOME: f.state }, stdio: ['pipe', 'pipe', 'pipe'],
     });
     const timer = setTimeout(() => { child.kill(); reject(new Error('Initial CLI prompt timed out')); }, 5000);
     let output = ''; let closing = false;

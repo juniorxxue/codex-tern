@@ -23,6 +23,12 @@ function setup() {
   return { rpc, c, list, changes: () => changes };
 }
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
+function deferred<T = any>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
 
 test('empty sessions stay out of history across refreshes; accepted first input adds the current session', async () => {
   const { rpc, c, list } = setup();
@@ -41,7 +47,9 @@ test('folder list stays scoped, coalesces reads, formats time and includes the u
   const { rpc, list } = setup();
   rpc.handler = async () => ({ data: [thread('saved'), thread('other', '/tmp/project/subfolder')], nextCursor: null });
   await Promise.all([list.refresh(), list.refresh()]);
-  assert.equal(rpc.calls.length, 1);
+  assert.equal(rpc.calls.length, 2);
+  assert.equal(rpc.calls[0].params.useStateDbOnly, true);
+  assert.equal(rpc.calls[1].params.useStateDbOnly, undefined);
   assert.equal(rpc.calls[0].params.cwd, '/tmp/project');
   assert.equal(rpc.calls[0].params.sortKey, 'recency_at');
   assert.equal(rpc.calls[0].params.sortDirection, 'desc');
@@ -57,13 +65,13 @@ test('pagination preserves earlier rows, removes duplicates and passes the backe
     ? { data: [thread('first'), thread('second')], nextCursor: null }
     : { data: [thread('first')], nextCursor: 'next-page' };
   await list.refresh(); await list.refresh(true);
-  assert.equal(rpc.calls[1].params.cursor, 'next-page');
+  assert.equal(rpc.calls[2].params.cursor, 'next-page');
   assert.deepEqual(list.snapshot.rows.map(t => t.id), ['current', 'first', 'second']);
   assert.equal(list.snapshot.more, false);
-  await list.refresh(true); assert.equal(rpc.calls.length, 2);
+  await list.refresh(true); assert.equal(rpc.calls.length, 3);
   await list.refresh();
-  assert.equal(rpc.calls.length, 4);
-  assert.equal(rpc.calls[3].params.cursor, 'next-page');
+  assert.equal(rpc.calls.length, 5);
+  assert.equal(rpc.calls[4].params.cursor, 'next-page');
   assert.deepEqual(list.snapshot.rows.map(t => t.id), ['current', 'first', 'second']);
   list.dispose();
 });
@@ -87,8 +95,8 @@ test('failures retain the last list; streaming does not repeatedly reload; idle 
   rpc.handler = async () => ({ data: [thread('saved')], nextCursor: null });
   await list.refresh();
   c.activeTurn = 'working'; c.changed(); c.changed(); c.changed(); await tick();
-  assert.equal(rpc.calls.length, 1); assert.equal(list.snapshot.canSwitch, true);
-  c.activeTurn = null; c.sessionsVersion++; c.changed(); await tick(); assert.equal(rpc.calls.length, 2);
+  assert.equal(rpc.calls.length, 2); assert.equal(list.snapshot.canSwitch, true);
+  c.activeTurn = null; c.sessionsVersion++; c.changed(); await tick(); assert.equal(rpc.calls.length, 3);
   rpc.handler = async () => { throw new Error('List unavailable'); };
   await list.refresh();
   assert.equal(list.snapshot.error, 'List unavailable');
@@ -96,7 +104,7 @@ test('failures retain the last list; streaming does not repeatedly reload; idle 
   c.queue.push({ id: 'q', text: 'next', images: [] }); c.changed();
   assert.equal(list.snapshot.canSwitch, true);
   list.hide(); c.thread = thread('another'); c.changed(); await tick();
-  assert.equal(rpc.calls.length, 3);
+  assert.equal(rpc.calls.length, 4);
   list.dispose();
 });
 
@@ -120,7 +128,7 @@ test('opening history does not change activity order; real activity reorders exi
   c.operation = 'Resuming session…'; c.changed();
   c.thread = thread('second'); c.changed();
   c.operation = ''; c.changed(); await tick();
-  assert.equal(rpc.calls.length, 1, 'selection never re-lists sessions');
+  assert.equal(rpc.calls.length, 2, 'selection never re-lists sessions');
   assert.equal(list.snapshot.current, 'second');
   assert.deepEqual(list.snapshot.rows.map(t => t.id), ['current', 'first', 'second']);
   rows = [{ ...thread('second'), updatedAt: 1792559999 }, thread('current'), thread('first', '/tmp/project', 1792558810)];
@@ -182,7 +190,7 @@ test('background completion updates order even while the selected session is run
   rpc.emit('notification', { method: 'turn/completed', params: { threadId: 'background', turn: { id: 'background-turn', status: 'completed', completedAt: 1792559200 } } });
   await tick();
   assert.deepEqual(list.snapshot.rows.map(t => t.id), ['background', 'current']);
-  assert.equal(rpc.calls.filter(x => x.method === 'thread/list').length, 2);
+  assert.equal(rpc.calls.filter(x => x.method === 'thread/list').length, 3);
   assert.equal(c.activeTurn, 'foreground-turn');
   list.dispose();
 });
@@ -197,16 +205,129 @@ test('missing recency metadata falls back to update time', async () => {
 
 test('owned background sessions stay selectable after stale lock and conflict results', async () => {
   const { rpc, c } = setup();
-  let reply!: (locked: Set<string>) => void;
-  const list = new FolderSessions(c, () => {}, () => new Promise(resolve => { reply = resolve; }));
+  const locks = deferred<Set<string>>();
+  const list = new FolderSessions(c, () => {}, () => locks.promise);
   rpc.handler = async () => ({ data: [thread('background'), thread('external')], nextCursor: null });
   const pending = list.refresh(); await tick();
   rpc.owned.add('background');
-  reply(new Set(['background', 'external'])); await pending;
+  locks.resolve(new Set(['background', 'external'])); await pending;
   assert.equal(list.snapshot.rows.find(t => t.id === 'background')?.locked, false);
   assert.equal(list.snapshot.rows.find(t => t.id === 'external')?.locked, true);
   list.markLocked('background');
   assert.equal(list.isLocked('background'), false, 'an old conflict cannot disable a thread now owned by this app');
   assert.equal(list.isLocked('external'), true, 'external writers still stay protected');
+  list.dispose();
+});
+
+test('indexed rows and writer locks appear before background repair finishes', async () => {
+  const { rpc, c, list: unused } = setup(); unused.dispose();
+  const repair = deferred();
+  const list = new FolderSessions(c, () => {}, async () => new Set(['saved']));
+  rpc.handler = async p => p.useStateDbOnly
+    ? { data: [{ ...thread('saved'), name: 'Cached title' }], nextCursor: null } : repair.promise;
+  const pending = list.refresh(); await tick();
+  assert.equal(list.refresh(), pending, 'refreshes coalesce through both phases');
+  assert.equal(list.snapshot.rows.find(t => t.id === 'saved')?.title, 'Cached title');
+  assert.equal(list.snapshot.rows.find(t => t.id === 'saved')?.locked, true);
+  assert.equal(list.snapshot.loading, false);
+  assert.equal(list.snapshot.canSwitch, true);
+  repair.resolve({ data: [{ ...thread('saved'), name: 'Repaired title' }, thread('discovered')], nextCursor: null });
+  await pending;
+  assert.equal(list.snapshot.rows.find(t => t.id === 'saved')?.title, 'Repaired title');
+  assert.equal(list.contains('discovered'), true);
+  assert.equal(rpc.calls.length, 2);
+  list.dispose();
+});
+
+test('missing or unsupported indexes fall back to repair without reporting an empty folder early', async () => {
+  for (const unsupported of [false, true]) {
+    const { rpc, c, list } = setup();
+    c.thread = { ...thread('blank'), name: '', preview: '' }; c.changed();
+    const repair = deferred();
+    rpc.handler = async p => {
+      if (!p.useStateDbOnly) return repair.promise;
+      if (unsupported) throw new Error('Unknown field useStateDbOnly');
+      return { data: [], nextCursor: null };
+    };
+    const pending = list.refresh(); await tick();
+    assert.equal(list.snapshot.loading, true);
+    assert.equal(list.snapshot.error, '');
+    repair.resolve({ data: [thread('discovered')], nextCursor: null }); await pending;
+    assert.deepEqual(list.snapshot.rows.map(t => t.id), ['discovered']);
+    assert.equal(list.snapshot.loading, false);
+    assert.equal(list.snapshot.error, '');
+    list.dispose();
+  }
+});
+
+test('pagination during repair is coalesced and uses the repaired cursor without dropping earlier rows', async () => {
+  const { rpc, list } = setup();
+  const repair = deferred();
+  rpc.handler = async p => p.cursor ? { data: [thread('first'), thread('older')], nextCursor: null }
+    : p.useStateDbOnly ? { data: [thread('first')], nextCursor: 'cached-cursor' } : repair.promise;
+  const pending = list.refresh(); await tick();
+  const more = list.refresh(true);
+  assert.equal(list.refresh(true), more);
+  assert.equal(rpc.calls.length, 2, 'pagination waits for the repaired cursor');
+  repair.resolve({ data: [thread('first'), thread('added')], nextCursor: 'repaired-cursor' });
+  await Promise.all([pending, more]);
+  assert.equal(rpc.calls.length, 3);
+  assert.equal(rpc.calls[2].params.cursor, 'repaired-cursor');
+  assert.deepEqual(list.snapshot.rows.map(t => t.id), ['current', 'first', 'added', 'older']);
+  list.dispose();
+});
+
+test('queued pagination survives a refresh starting as repair finishes', async () => {
+  const { rpc, list } = setup();
+  const repair = deferred();
+  rpc.handler = async p => p.cursor ? { data: [thread('older')], nextCursor: null }
+    : p.useStateDbOnly ? { data: [thread('first')], nextCursor: 'next' } : repair.promise;
+  const pending = list.refresh(); await tick();
+  const refreshed = pending.then(() => list.refresh());
+  const more = list.refresh(true);
+  repair.resolve({ data: [thread('first')], nextCursor: 'next' });
+  await Promise.all([refreshed, more]);
+  assert.equal(list.contains('older'), true);
+  assert.equal(rpc.calls.filter(call => call.params.cursor).length, 1);
+  list.dispose();
+});
+
+test('late repairs and queued pagination cannot change a new folder, disconnected or disposed list', async () => {
+  for (const action of ['folder', 'disconnect', 'dispose']) {
+    const { rpc, c, list, changes } = setup();
+    const repair = deferred();
+    rpc.handler = async p => p.cwd !== '/tmp/project'
+      ? { data: [thread('new-saved', p.cwd)], nextCursor: null }
+      : p.useStateDbOnly ? { data: [thread('old-saved')], nextCursor: 'old-cursor' } : repair.promise;
+    const pending = list.refresh(); await tick();
+    const more = list.refresh(true);
+    if (action === 'dispose') list.dispose();
+    else if (action === 'disconnect') { c.connection = 'disconnected'; c.changed(); }
+    else { c.cwd = '/tmp/other'; c.thread = thread('new-current', c.cwd); c.changed(); await tick(); }
+    const before = list.snapshot, count = changes();
+    repair.resolve({ data: [thread('stale')], nextCursor: 'stale-cursor' });
+    await Promise.all([pending, more]);
+    assert.deepEqual(list.snapshot, before);
+    assert.equal(changes(), count);
+    assert.equal(rpc.calls.some(call => call.params.cursor), false);
+    list.dispose();
+  }
+});
+
+test('repair failure retains the usable indexed list and lets a later refresh recover', async () => {
+  const { rpc, list } = setup();
+  rpc.handler = async p => {
+    if (p.useStateDbOnly) return { data: [thread('saved')], nextCursor: null };
+    throw new Error('Repair unavailable');
+  };
+  await list.refresh();
+  assert.equal(list.contains('saved'), true);
+  assert.equal(list.snapshot.canSwitch, true);
+  assert.equal(list.snapshot.loading, false);
+  assert.equal(list.snapshot.error, 'Repair unavailable');
+  rpc.handler = async () => ({ data: [thread('recovered')], nextCursor: null });
+  await list.refresh();
+  assert.equal(list.snapshot.error, '');
+  assert.deepEqual(list.snapshot.rows.map(t => t.id), ['current', 'recovered']);
   list.dispose();
 });

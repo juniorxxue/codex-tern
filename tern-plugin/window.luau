@@ -81,7 +81,8 @@ local function view(snapshot, selection, reveals)
   end
   local note = snapshot.error
   if note == nil or note == "" then
-    if not snapshot.connected then note = "Codex disconnected."
+    if snapshot.connecting then note = "Connecting…"
+    elseif not snapshot.connected then note = "Codex disconnected."
     elseif snapshot.loading and #snapshot.rows == 0 then note = "Loading…"
     elseif #snapshot.rows == 0 then note = "No sessions in this folder."
     elseif not snapshot.canSwitch then note = snapshot.blockedReason end
@@ -196,7 +197,7 @@ local function poll(fast)
   for _, entry in panels do if entry.raw ~= "closed" then live = true; break end end
   if not live then return end
   -- Clicks need a prompt response; an idle panel can poll less often.
-  timer = tern.timer(if tern.now() < fast_until then 50 else 700, function(cx)
+  timer = tern.timer(if tern.now() < fast_until then 50 elseif outline.live() then 250 else 700, function(cx)
     timer = nil
     if cx then
       for pane, entry in panels do update(cx, pane, entry) end

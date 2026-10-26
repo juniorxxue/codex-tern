@@ -19,7 +19,8 @@ await writeFile(history, JSON.stringify({ seq: 100, threads: [{
   turns: Array.from({ length: 61 }, (_, i) => ({ id: `saved-turn-${i}`, status: 'completed', items: [
     { id: 'user', type: 'userMessage', content: [{ type: 'text', text_elements: [], text:
       i === 0 ? 'SUBSTITUTION Opening discussion' : i === 15 ? 'COUNTEREXAMPLE to substitution' : i === 30 ? 'BUILD failed during the discussion'
-        : i === 60 ? 'RETURN to substitution after the build detour' : `Follow-up on the current rule ${i}` }] },
+        : i === 60 ? 'RETURN to substitution after the build detour'
+        : i >= 32 && i <= 58 && i % 2 === 0 ? `SCROLLTOPIC${(i - 30) / 2} A separate topic for scrolling` : `Follow-up on the current rule ${i}` }] },
     { id: 'answer', type: 'agentMessage', phase: 'final_answer', text: `Saved explanation ${i}.\n\n` +
       Array.from({ length: 3 }, () => 'The discussion continues with the same rule. This saved passage makes scrolling and old-message navigation visible in the native client.').join('\n\n') },
   ] })),
@@ -40,6 +41,12 @@ const text = selector => tree(selector).map(n => n.text ?? '').join('\n');
 const click = selector => ctl(`click ${selector}`), key = chord => ctl(`key ${chord}`), type = text => ctl(`type ${JSON.stringify(text)}`);
 const row = title => `[data-role="codex-tern.sessions.item"][title="${title}"]`;
 const link = title => `[data-role="codex-tern.toc.link"][title="${title}"]`;
+const selected = () => text('[data-role="codex-tern.toc.body"] [data-mark="pick"]');
+function selectedVisible() {
+  const active = tree('[data-role="codex-tern.toc.body"] [data-mark="pick"]')[0];
+  const body = tree('[data-role="codex-tern.toc.body"]')[0];
+  return active && body && active.rect[1] >= body.rect[1] - 1 && active.rect[1] + active.rect[3] <= body.rect[1] + body.rect[3] + 1;
+}
 const editor = '[data-role="omp.editor"] .sf-editor';
 const calls = () => existsSync(logFile) ? readFileSync(logFile, 'utf8').trim().split('\n').map(JSON.parse) : [];
 const jobs = () => calls().filter(e => e.source === 'thread_outline').length;
@@ -87,6 +94,44 @@ try {
   click('[data-role="codex-tern.toc.visits"]');
   await wait(() => visiblePrompt('RETURN to substitution'), 'jump to later return');
   pass('returning topics expose a second exact prompt without a third heading level');
+
+  await wait(() => selected().includes('Substitution rule'), 'live end highlights the return');
+  const noAgent = jobs(), focused = ctl('state').focused.id;
+  click(editor); type('Unsent draft during scrolling');
+  ctl('scroll 70');
+  await wait(() => /Topic \d+/.test(selected()), 'scrolling into an earlier topic updates selection');
+  await wait(selectedVisible, 'active topic remains inside the TOC viewport');
+  const readingBefore = tree('.sf-main').find(n => n.rect[0] > 390).rect[1];
+  await pause(900);
+  assert.equal(tree('.sf-main').find(n => n.rect[0] > 390).rect[1], readingBefore, 'passive selection does not move the conversation');
+  assert.equal(ctl('state').focused.id, focused, 'following never focuses the TOC');
+  assert.ok(text('[data-role="omp.editor"] .sf-ed-text').includes('Unsent draft'));
+  assert.equal(jobs(), noAgent, 'scrolling does not call the outline agent');
+  ctl('shot toc-scroll-follow');
+  pass('scrolling follows the reading topic, reveals it in a long TOC, and preserves focus, draft, reading position and model usage');
+  key('Control+Shift+r'); await pause(500);
+  await wait(selectedVisible, 'reading highlight survives UI reload');
+  assert.equal(tree('.sf-main').find(n => n.rect[0] > 390).rect[1], readingBefore, 'reload retains the reading position');
+  assert.ok(text('[data-role="omp.editor"] .sf-ed-text').includes('Unsent draft'));
+  ctl('resize 880 650'); await pause(500);
+  await wait(() => {
+    const body = tree('[data-role="codex-tern.toc.body"]')[0].rect, grid = tree('.tv-grid').at(-1).rect;
+    return body[1] + body[3] <= grid[1] + grid[3] && selectedVisible();
+  }, 'long outline fits the smaller card and keeps its selected row visible');
+  ctl('shot toc-scroll-narrow'); ctl('resize 1280 900'); await pause(500);
+  pass('a long outline keeps its active row visible through UI reload and card resizing');
+  ctl('scroll -100000');
+  await wait(() => selected().includes('Substitution rule'), 'scrolling to the live end returns to the earlier topic');
+  click(editor); key('Meta+a'); key('Backspace');
+  click(link('Counterexample'));
+  await wait(() => selected().includes('Counterexample'), 'child highlighted');
+  click('[data-role="codex-tern.toc.fold"]');
+  await wait(() => selected().includes('Substitution rule') && !tree(link('Counterexample')).length, 'collapsed parent represents its active child');
+  click('[data-role="codex-tern.toc.fold"]');
+  await wait(() => selected().includes('Counterexample'), 'expanding restores the active child');
+  click(editor); ctl('scroll -100000');
+  await wait(() => selected().includes('Substitution rule'), 'reading follows after expanding');
+  pass('return visits and manually collapsed subtopics keep the correct reading highlight');
 
   click('[data-role="codex-tern.sessions.new"]');
   await wait(() => text('[data-role="codex-tern.toc.note"]').includes('Topics appear'), 'new session auto enabled');

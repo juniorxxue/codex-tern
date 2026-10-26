@@ -50,6 +50,8 @@ Sessions sort by last conversation activity, newest first. Sending a message or 
 
 The **Session TOC** is a separate native card. It starts below **Sessions** and follows the selected conversation. Use its own drag handle and dividers to move or resize it anywhere in the layout. Closing either card leaves the other available. Reopen the outline with **Codex: Session TOC** in Tern's command palette.
 
+As you scroll the conversation, the TOC highlights the topic near the top of the reading area and keeps that entry visible in its card. At the live end, it follows the latest indexed prompt. A collapsed topic stays collapsed and highlights its parent instead. This uses the saved prompt links locally, with no model call or change to the conversation, draft, or keyboard focus.
+
 New sessions build a two-level outline automatically after accepted prompts and finished replies. Related follow-ups share a topic. Useful detours get their own entry. The outline can merge, split or rename entries as the discussion develops. Updated labels use a short, quiet wipe; reduced-motion settings disable it.
 
 Click a heading to jump to its opening prompt, including older history that has not loaded yet. **↩ N** cycles through later visits to the same topic. The chevron folds a topic's subheadings. Your draft and running task stay intact.

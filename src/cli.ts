@@ -84,12 +84,11 @@ async function main() {
     }
     // Never await backend work in the UI input loop: approvals and cancellation stay live.
     const connection = c.connect(options.resume, options.prompt !== undefined).then(async () => {
-      if (ui) await ui.openSidebar();
       if (options.prompt !== undefined) await c.submit(options.prompt);
-    }).catch(async e => {
+    }).catch(e => {
       c.notice(e.message, true); c.connection = rpc.connected ? 'ready' : 'disconnected'; c.changed();
-      if (ui && rpc.connected) await ui.openSidebar();
     }).finally(ready);
+    const sidebar = ui?.openSidebar().catch(error => c.notice(error.message, true));
     if (ui) {
       await ui.run();
     } else {
@@ -97,7 +96,9 @@ async function main() {
       c.on('change', (() => {
         const seen = new Set<string>();
         const shownNotices = new WeakSet<object>();
+        let account = c.account;
         return () => {
+          if (c.account !== account) { account = c.account; console.log(`\n${account}`); }
           for (const item of c.items) {
             if (!item.done || seen.has(item.id)) continue;
             seen.add(item.id);
@@ -113,7 +114,7 @@ async function main() {
       rpc.on('request', m => console.log(`\n[Pending request ${m.id}] ${m.method}\n${JSON.stringify(m.params, null, 2)}\nRespond with /reply ${m.id} followed by the native JSON response.`));
       await connection;
       if (!c.thread) { process.exitCode = 1; return; }
-      console.log(`${c.account}\nWorkspace: ${c.cwd}\nModel: ${c.model} · ${c.effort}\nType /help for commands.`);
+      console.log(`Workspace: ${c.cwd}\nModel: ${c.model} · ${c.effort}\nType /help for commands.`);
       const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: '\n› ' });
       rl.on('SIGINT', () => { if (c.activeTurn) void c.act(() => c.stop()); else rl.close(); });
       rl.prompt();
@@ -148,7 +149,7 @@ async function main() {
       rl.close();
     }
     await close();
-    await connection;
+    await Promise.all([connection, sidebar]);
   } catch (e) {
     console.error(e instanceof Error ? e.message : e); process.exitCode = 1;
   } finally { await close(); }

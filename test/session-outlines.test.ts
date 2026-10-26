@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { SessionOutlines } from '../src/session-outlines';
 import { AuxiliaryAgent } from '../src/auxiliary-agent';
-import { outlineBatches, outlineFromHistory, validateOutline, outlineHash, type OutlineTurn, type OutlineTopic } from '../src/session-outline';
+import { outlineBatches, outlineFromHistory, validateOutline, outlineHash, outlineLocations, type OutlineTurn, type OutlineTopic } from '../src/session-outline';
 import { Controller } from '../src/controller';
 import type { CodexRpc } from '../src/rpc';
 import type { Turn } from '../src/generated/v2/Turn';
@@ -21,6 +21,9 @@ const turn = (id: string, prompt: string, reply = '', status = reply ? 'complete
   messages: [{ role: 'user', anchor: `${id}:user`, text: prompt }, ...(reply ? [{ role: 'assistant' as const, anchor: `${id}:user`, text: reply }] : [])] });
 const topic = (id: string, title: string, anchor: string, children: OutlineTopic['children'] = []): OutlineTopic =>
   ({ id, title, summary: `Scope: ${title}`, anchors: [anchor], children });
+const leaf = (id: string, title: string, anchor: string) => {
+  const { children, ...node } = topic(id, title, anchor); return node;
+};
 const wireTurn = (value: OutlineTurn): Turn => ({ id: value.id, status: value.status, items: value.messages.map((m, i) => m.role === 'user'
   ? { id: 'user', type: 'userMessage', content: [{ type: 'text', text: m.text, text_elements: [] }] }
   : { id: `reply-${i}`, type: 'agentMessage', phase: 'final_answer', text: m.text }) }) as Turn;
@@ -93,6 +96,33 @@ test('a detour and later return keep two levels and distinct prompt targets', as
   assert.equal(outlines.target('chat', snapshot.revision, 'rules', 1), 'c:user');
   assert.equal(outlines.target('chat', 'stale', 'rules', 0), undefined);
   assert.equal(outlines.target('chat', snapshot.revision, 'rules', -1), undefined);
+  assert.deepEqual(outlines.location('chat', 'a:user'), { nodeId: 'rules', visit: 0 });
+  assert.deepEqual(outlines.location('chat', 'b:user'), { nodeId: 'build', visit: 0 });
+  assert.deepEqual(outlines.location('chat', 'c:user'), { nodeId: 'rules', visit: 1 });
+  assert.equal(outlines.location('chat', 'unindexed'), undefined);
+});
+
+test('reading a reply follows its subtopic until a detour or a new visit opens', () => {
+  const rules = topic('rules', 'Rule A', 'a', [leaf('counter', 'Counterexample', 'c')]);
+  rules.anchors.push('g');
+  const locations = outlineLocations({ topics: [rules, topic('build', 'Build', 'e')], anchors: ['before', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] });
+  assert.equal(locations.get('before'), undefined);
+  assert.deepEqual(locations.get('b'), { nodeId: 'rules', visit: 0 });
+  assert.deepEqual(locations.get('d'), { nodeId: 'counter', visit: 0 });
+  assert.deepEqual(locations.get('f'), { nodeId: 'build', visit: 0 });
+  assert.deepEqual(locations.get('h'), { nodeId: 'rules', visit: 1 });
+});
+
+test('shared opening prompts prefer a stable specific heading; new revisions replace the reading index', async t => {
+  const { outlines, done } = setup(); t.after(() => outlines.cancelAll());
+  await outlines.enableNew('chat');
+  const source = [turn('a', 'Rule A'), turn('b', 'Follow-up')];
+  await outlines.update('chat', model, source);
+  await done(0, [topic('rule', 'Rule A', 'a:user', [leaf('first', 'First rule', 'a:user'), leaf('second', 'Second rule', 'a:user')])]);
+  assert.deepEqual(outlines.location('chat', 'b:user'), { nodeId: 'first', visit: 0 });
+  await outlines.update('chat', model, [...source, turn('c', 'More evidence')]);
+  await done(1, [topic('merged', 'Combined rule', 'a:user')]);
+  assert.deepEqual(outlines.location('chat', 'b:user'), { nodeId: 'merged', visit: 0 });
 });
 
 test('new evidence supersedes an unfinished revision and preserves full backfills', async t => {

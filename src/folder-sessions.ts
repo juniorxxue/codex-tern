@@ -28,10 +28,12 @@ export class FolderSessions {
   private cursor: string | null = null;
   private pages = 0;
   private generation = 0;
-  private request?: { generation: number; promise: Promise<void> };
+  private request?: { generation: number; more: boolean; promise: Promise<void> };
+  private moreRequest?: { generation: number; promise: Promise<void> };
   private visible = false;
   private disposed = false;
   private observed = '';
+  private connection: Controller['connection'];
   private locked = new Set<string>();
   private conflicts = new Map<string, number>();
   private lockRequest?: { generation: number; ids: string; promise: Promise<void> };
@@ -43,6 +45,7 @@ export class FolderSessions {
   constructor(private readonly c: Controller, private readonly changed: () => void,
     private readonly probe: LockProbe = ids => probeWriterLocks(c.rpc, ids)) {
     this.cwd = c.cwd;
+    this.connection = c.connection;
     this.rememberCurrent();
     this.observed = this.fingerprint();
     c.on('change', this.observe);
@@ -72,6 +75,10 @@ export class FolderSessions {
   }
 
   private observe = () => {
+    if (this.connection !== this.c.connection) {
+      this.connection = this.c.connection;
+      if (this.connection !== 'ready') { this.generation++; this.loading = false; }
+    }
     if (this.cwd !== this.c.cwd) {
       this.cwd = this.c.cwd; this.generation++;
       this.threads = []; this.cursor = null; this.pages = 0; this.loading = false; this.error = '';
@@ -100,7 +107,7 @@ export class FolderSessions {
       loading: this.loading, error: this.error, more: !!this.cursor,
       blockedReason: this.c.selecting ? 'Opening session…' : '',
       canSwitch: this.c.connection === 'ready' && !this.c.selecting,
-      connected: this.c.connection === 'ready' };
+      connected: this.c.connection === 'ready', connecting: this.c.connection === 'connecting' };
   }
 
   contains(id: string) { return this.threads.some(t => t.id === id); }
@@ -146,14 +153,28 @@ export class FolderSessions {
     this.visible = true;
     this.observe();
     if (this.c.connection !== 'ready') return Promise.resolve();
-    if (this.request?.generation === this.generation) return this.request.promise;
+    if (this.request?.generation === this.generation) {
+      if (!more || this.request.more) return this.request.promise;
+      if (this.moreRequest?.generation === this.generation) return this.moreRequest.promise;
+      // A click during background repair must advance from the repaired cursor,
+      // rather than disappearing into the refresh already in progress.
+      const generation = this.generation;
+      const promise = this.request.promise.then(() => {
+        if (this.moreRequest?.promise === promise) this.moreRequest = undefined;
+        if (!this.disposed && generation === this.generation) return this.refresh(true);
+      }).finally(() => { if (this.moreRequest?.promise === promise) this.moreRequest = undefined; });
+      this.moreRequest = { generation, promise };
+      return promise;
+    }
     if (more && !this.cursor) return Promise.resolve();
     const generation = this.generation;
     const cwd = this.cwd;
+    const first = this.pages === 0 && !more;
+    const current = () => !this.disposed && generation === this.generation;
     this.loading = true; this.error = ''; this.changed();
     // A deferred start also coalesces changes emitted while an RPC is being set up.
     const promise = Promise.resolve().then(async () => {
-      try {
+      const read = async (indexed = false) => {
         // Refresh all pages already shown. A session switch must not collapse
         // a paged list back to its first page while the user is clicking it.
         const rows: Thread[] = [];
@@ -164,8 +185,9 @@ export class FolderSessions {
           const page = await this.c.rpc.request('thread/list', {
             cwd, limit: 30, sortKey: 'recency_at', sortDirection: 'desc',
             ...(cursor ? { cursor } : {}),
+            ...(indexed ? { useStateDbOnly: true } : {}),
           });
-          if (this.disposed || generation !== this.generation) return;
+          if (!current()) return;
           rows.push(...page.data.filter((t: Thread) => !t.ephemeral && !this.c.isArchived(t.id) && resolve(t.cwd) === resolve(cwd)));
           cursor = page.nextCursor ?? null; count++;
         } while (cursor && count < pages);
@@ -182,6 +204,18 @@ export class FolderSessions {
         this.mergeLocal();
         this.cursor = cursor; this.pages = more ? this.pages + count : count;
         await this.refreshLocks();
+      };
+      try {
+        if (first) {
+          try {
+            await read(true);
+            if (!current()) return;
+            // Publish indexed rows before scanning rollouts. An empty index
+            // stays in Loading until repair can confirm that the folder is empty.
+            this.loading = this.snapshot.rows.length === 0; this.changed();
+          } catch { /* Older backends or an unavailable index use the normal read below. */ }
+        }
+        if (current()) await read();
       } catch (error) {
         if (!this.disposed && generation === this.generation)
           this.error = error instanceof Error ? error.message : String(error);
@@ -191,7 +225,7 @@ export class FolderSessions {
         }
       }
     });
-    this.request = { generation, promise };
+    this.request = { generation, more, promise };
     return promise;
   }
 

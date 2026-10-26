@@ -28,6 +28,7 @@ export class Controller extends EventEmitter {
   private recovery?: RecoveryStore;
   private recoveryError = '';
   private reconnecting?: Promise<void>;
+  private metadataVersion = 0;
   private readonly unread = new Map<string, Completion>();
   private readonly titles: SessionTitles;
   private readonly auxiliary: AuxiliaryAgent;
@@ -65,6 +66,7 @@ export class Controller extends EventEmitter {
       this.globalDiagnostics.push(text); this.globalDiagnostics = this.globalDiagnostics.slice(-30);
     });
     rpc.on('disconnected', (text: string) => {
+      this.metadataVersion++;
       this.cancelTitles();
       this.outlines?.cancelAll();
       for (const conversation of this.all()) {
@@ -73,7 +75,7 @@ export class Controller extends EventEmitter {
         conversation.requests = []; conversation.queuePaused = true; conversation.notice(text, true);
       }
     });
-    rpc.on('closing', () => { this.cancelTitles(); this.outlines?.cancelAll(); });
+    rpc.on('closing', () => { this.metadataVersion++; this.cancelTitles(); this.outlines?.cancelAll(); });
   }
 
   private all() { return new Set([this.selected, ...this.conversations.values()]); }
@@ -271,6 +273,10 @@ export class Controller extends EventEmitter {
     if (this.thread?.id !== id || this.isArchived(id)) return;
     return this.outlines?.target(id, revision, node, visit);
   }
+  outlineLocation(id: string, prompt: string) {
+    if (this.thread?.id !== id) return;
+    return this.outlines?.location(id, prompt);
+  }
   async flushOutlines() { await this.outlines?.flush(); }
   async refreshPreferences() { await this.preferences.load(); this.changed(); }
   async setNewSessionModel(model?: string) {
@@ -331,14 +337,35 @@ export class Controller extends EventEmitter {
     try { await action(); } catch (error) { this.notice(error instanceof Error ? error.message : String(error), true); }
   }
 
+  private async readAccountAndModels() {
+    const version = ++this.metadataVersion;
+    const publishAccount = (account: string) => {
+      if (version !== this.metadataVersion) return;
+      for (const conversation of this.all()) conversation.account = account;
+      this.changed();
+    };
+    // Account text is display metadata. It must not delay opening a session,
+    // and its late reply must follow selection without reviving a closed backend.
+    void this.rpc.request('account/read', { refreshToken: false }).then(a => {
+      publishAccount(a.account?.type === 'chatgpt' ? `ChatGPT · ${a.account.planType ?? 'Signed in'}`
+        : a.account?.type ?? (a.requiresOpenaiAuth ? 'Sign in with codex login' : 'Connected'));
+    }, () => publishAccount('Account unavailable'));
+    try {
+      const models = await this.rpc.request('model/list', {});
+      if (version === this.metadataVersion)
+        for (const conversation of this.all()) conversation.models = models.data ?? [];
+    } catch (error) {
+      if (version === this.metadataVersion) this.notice(`Could not load models: ${(error as Error).message}`, true);
+    }
+    if (version !== this.metadataVersion) throw new Error('Codex disconnected while connecting.');
+  }
+
   async connect(resumeId?: string, fresh = false) {
     try { await this.preferences.load(); }
     catch (error) { this.notice(`Could not read new session preferences: ${(error as Error).message}`, true); }
-    await this.selected.connect();
+    await this.rpc.start();
+    await this.readAccountAndModels();
     this.connection = 'ready';
-    for (const conversation of this.all()) {
-      conversation.models = this.selected.models; conversation.account = this.selected.account;
-    }
     const id = resumeId ?? (fresh ? undefined : this.recovery?.selected);
     if (id) {
       if (this.recovery?.session(id)) { this.selected = this.conversation(id); this.changed(); }
@@ -362,11 +389,8 @@ export class Controller extends EventEmitter {
         conversation.resetHistory();
       }
       await this.rpc.restart();
-      await this.selected.readAccountAndModels();
+      await this.readAccountAndModels();
       this.connection = 'ready';
-      for (const conversation of this.all()) {
-        conversation.models = this.selected.models; conversation.account = this.selected.account;
-      }
       if (this.thread) {
         // Keep local drafts and queues; refresh only the selected thread's backend state.
         this.selected = await this.prepareSession(this.thread.id, recoverEmpty);

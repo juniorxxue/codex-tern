@@ -27,7 +27,7 @@ import { assistantParts } from './proposals';
 import { ProposalView } from './proposal-view';
 import { runPluginCommand } from './tern-plugin';
 import { SessionDetails, WorkspaceForm, modelName } from './session-panels';
-import { ReadingPositions, readingAnchorClass } from './reading-position';
+import { ReadingPositions, readingAnchorClass, inspectReadingFocus } from './reading-position';
 
 const styles = css`
   .ct-buttons { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -51,7 +51,7 @@ const styles = css`
 `;
 
 // Increment when the retained runtime or reload state needs an incompatible change.
-export const UI_API_VERSION = 2;
+export const UI_API_VERSION = 3;
 export type NativeUIState = ReturnType<NativeUI['reloadState']>;
 
 export class NativeUI {
@@ -99,6 +99,10 @@ export class NativeUI {
     () => `ct.transcript.${this.clientInstance}`, id => this.surface.reveal(id, 'start'), () => this.session.caps.cell.h);
   private sidebarNavigation?: { request: string; target: string; pending: boolean };
   private tocJump = 0;
+  private tocJumping = false;
+  private tocInspecting = false;
+  private tocLines?: number;
+  private readingPrompts = new Map<string, string>();
   private tocLocation?: { threadId: string; nodeId: string; visit: number };
   private tocError?: { threadId: string; message: string };
   openProject?: (cwd: string, resume?: string) => Promise<boolean>;
@@ -146,7 +150,7 @@ export class NativeUI {
     if (!target || this.c.thread?.id !== threadId) return;
     const token = ++this.tocJump;
     const current = () => !this.ended && this.tocJump === token && this.c.thread?.id === threadId;
-    this.tocError = undefined;
+    this.tocError = undefined; this.tocJumping = true;
     try {
       while (current() && !this.c.items.some(i => i.id === target) && this.c.historyCursor) {
         const before = this.c.historyCursor;
@@ -163,7 +167,26 @@ export class NativeUI {
       await this.readingPositions.jump(threadId, `main.${key}`, current);
     } catch {
       if (current()) { this.tocError = { threadId, message: 'Could not locate this prompt. Rebuild TOC or try again.' }; this.render(); }
-    }
+    } finally { if (this.tocJump === token) this.tocJumping = false; }
+  }
+
+  private async followOutline() {
+    const outline = this.c.outline;
+    if (this.ended || !this.visible || this.panel || this.navigating || this.c.selecting || this.tocJumping
+      || this.tocInspecting || !outline?.topics.length) return;
+    const { threadId, revision } = outline, jump = this.tocJump, prompts = this.readingPrompts;
+    this.tocInspecting = true;
+    try {
+      const focus = await inspectReadingFocus(`ct.transcript.${this.clientInstance}`, this.clientInstance);
+      if (!focus || this.ended || !this.visible || this.panel || this.navigating || this.c.selecting
+        || this.tocJumping || this.tocJump !== jump || this.c.thread?.id !== threadId || this.c.outline?.revision !== revision) return;
+      const prompt = focus.node && prompts.get(focus.node);
+      const location = prompt ? this.c.outlineLocation(threadId, prompt) : undefined;
+      const next = location && { threadId, ...location };
+      if (JSON.stringify(this.tocLocation) !== JSON.stringify(next) || this.tocLines !== focus.lines) {
+        this.tocLocation = next; this.tocLines = focus.lines; this.render();
+      }
+    } finally { this.tocInspecting = false; }
   }
 
   assertReloadable() {
@@ -183,7 +206,7 @@ export class NativeUI {
       focused: this.focused, visible: this.visible, sendMode: this.sendMode,
       activityModes: this.activityModes, proposalSelections: this.proposalSelections, proposalDrafts: this.proposalDrafts,
       previews: this.previews, failedPreviews: this.failedPreviews, folder: this.folderSessions.reloadState(),
-      reading: this.readingPositions.saved, tocLocation: this.tocLocation, tocError: this.tocError };
+      reading: this.readingPositions.saved, tocLocation: this.tocLocation, tocError: this.tocError, tocLines: this.tocLines };
   }
 
   private requestReload() {
@@ -261,6 +284,7 @@ export class NativeUI {
   private focusComposer() { this.focused = 'dock.body.line.input'; this.surface.focus(this.focused); }
   async openSidebar() {
     if (this.ended) return;
+    void this.folderSessions.refresh();
     this.sidebarRequested = true; this.render();
     try { await runPluginCommand('sessions'); }
     catch { /* The native client remains usable without the optional window plugin. */ }
@@ -357,6 +381,7 @@ export class NativeUI {
   private async navigate(change: () => Promise<void>, id?: string, reportError = false): Promise<boolean> {
     if (this.navigating) return false;
     this.navigating = true;
+    this.tocJump++; this.tocJumping = false;
     this.syncComposer();
     this.folderSessions.clearError();
     const previous = this.c.thread?.id;
@@ -728,6 +753,16 @@ export class NativeUI {
         </card>)}
       </col> as Node;
     this.readingPositions.nodes = main.children.map((node, i) => `main.${node.props.key ?? i}`);
+    const prompts = new Map(c.items.filter(entry => entry.item.type === 'userMessage').map(entry => [
+      `main.${entry.item.type === 'userMessage' && entry.item.clientId ? `${entry.turnId}:client:${entry.item.clientId}` : entry.id}`, entry.id]));
+    this.readingPrompts = new Map();
+    let prompt: string | undefined;
+    for (const id of this.readingPositions.nodes) {
+      const next = prompts.get(id);
+      // Unindexed pending input keeps the last known topic until the agent catches up.
+      if (next && c.thread && c.outlineLocation(c.thread.id, next)) prompt = next;
+      if (prompt) this.readingPrompts.set(id, prompt);
+    }
     main = new Node(main.kind, main.props, main.children.map((node, i) =>
       html.div({ key: String(node.props.key ?? i), class: readingAnchorClass(this.readingPositions.nodes[i]!) }, node)));
     this.surface.render({ main,
@@ -735,7 +770,8 @@ export class NativeUI {
         <text key="sessions" hidden title={JSON.stringify({ ...this.folderSessions.snapshot, cols: this.session.caps.cols,
           sidebarRequest: this.sidebarRequested ? this.clientInstance : undefined,
           readingRequest: this.readingPositions.request,
-          tocProtocol: 1, toc: c.outline && { ...c.outline,
+          tocProtocol: 1, tocFollowProtocol: 1, tocClient: this.clientInstance, tocLines: this.tocLines,
+          toc: c.outline && { ...c.outline,
             error: this.tocError && this.tocError.threadId === c.thread?.id ? this.tocError.message : c.outline.error,
             location: this.tocLocation?.threadId === c.thread?.id ? this.tocLocation : undefined },
           cellWidth: this.session.caps.cell.w,
@@ -747,6 +783,7 @@ export class NativeUI {
             'toc-get': e => { if (e.value) { this.tocError = undefined; void c.generateOutline(e.value); } },
             'toc-rebuild': e => { if (e.value) { this.tocError = undefined; void c.generateOutline(e.value, true); } },
             'toc-jump': e => { void this.jumpOutline(e.value); },
+            'toc-follow': () => { void this.followOutline(); },
             reload: () => this.requestReload(),
             locks: () => { void this.folderSessions.refreshLocks(); },
             more: () => { void this.folderSessions.refresh(true); },

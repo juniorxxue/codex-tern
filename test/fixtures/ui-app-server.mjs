@@ -78,11 +78,17 @@ function finish(text, status = 'completed') {
   persist();
   event('turn/completed', { turn });
 }
-createInterface({ input: process.stdin }).on('line', line => {
+createInterface({ input: process.stdin }).on('line', async line => {
   const m = JSON.parse(line);
   if (process.env.QA_RPC_LOG) appendFileSync(process.env.QA_RPC_LOG,
     JSON.stringify({ pid: process.pid, method: m.method ?? 'response', threadId: m.params?.threadId,
-      ephemeral: m.params?.ephemeral, source: m.params?.threadSource, cursor: m.params?.cursor, name: m.params?.name }) + '\n');
+      ephemeral: m.params?.ephemeral, source: m.params?.threadSource, cursor: m.params?.cursor, name: m.params?.name,
+      useStateDbOnly: m.params?.useStateDbOnly }) + '\n');
+  const gates = process.env.QA_STARTUP_RELEASE_DIR;
+  const gate = m.method === 'account/read' ? 'account'
+    : ['thread/start', 'thread/resume'].includes(m.method) ? 'session'
+    : m.method === 'thread/list' && !m.params?.useStateDbOnly ? 'scan' : undefined;
+  if (gates && gate) while (!existsSync(join(gates, gate))) await new Promise(resolve => setTimeout(resolve, 10));
   const reply = result => send({ id: m.id, result });
   if (!m.method) {
     const context = pending.get(m.id);
@@ -146,7 +152,9 @@ createInterface({ input: process.stdin }).on('line', line => {
       const rows = [...threads.values()].reverse().filter(t => !t.ephemeral && !t.archived && (!m.params.cwd || t.cwd === m.params.cwd))
         .sort((a, b) => activity(b) - activity(a));
       const at = Number(m.params.cursor ?? 0), limit = Math.min(m.params.limit ?? 30, process.env.QA_SESSION_FIXTURES ? 4 : 30);
-      reply({ data: rows.slice(at, at + limit), nextCursor: at + limit < rows.length ? String(at + limit) : null }); break;
+      const data = rows.slice(at, at + limit).map(t => gates && m.params.useStateDbOnly && t.id === 'saved-2'
+        ? { ...t, name: 'Cached session 2' } : t);
+      reply({ data, nextCursor: at + limit < rows.length ? String(at + limit) : null }); break;
     }
     case 'thread/archive': {
       const target = threads.get(m.params.threadId);
@@ -213,9 +221,10 @@ createInterface({ input: process.stdin }).on('line', line => {
               if (root && message.text.includes('REPAIR')) root.title = 'Substitution and its repair';
               continue;
             }
-            const id = build ? 'build' : 'rules';
+            const scrollTopic = message.text.match(/SCROLLTOPIC(\d+)/)?.[1];
+            const id = scrollTopic ? `section-${scrollTopic}` : build ? 'build' : 'rules';
             let root = topics.find(t => t.id === id);
-            if (!root) { root = { id, title: build ? 'Build failure' : 'Substitution rule', summary: 'Fixture topic', anchors: [message.anchor], children: [] }; topics.push(root); }
+            if (!root) { root = { id, title: scrollTopic ? `Topic ${scrollTopic}` : build ? 'Build failure' : 'Substitution rule', summary: 'Fixture topic', anchors: [message.anchor], children: [] }; topics.push(root); }
             if (message.text.includes('RETURN') && !root.anchors.includes(message.anchor)) root.anchors.push(message.anchor);
             const label = message.text.includes('COUNTEREXAMPLE') ? 'Counterexample' : message.text.includes('SUGGEST') ? 'Proposed repair' : '';
             if (label && !root.children.some(c => c.title === label)) root.children.push({ id: label === 'Counterexample' ? 'counter' : 'repair', title: label, summary: 'Fixture subtopic', anchors: [message.anchor] });

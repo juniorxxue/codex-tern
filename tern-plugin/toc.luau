@@ -13,12 +13,15 @@ function toc.view(snapshot, entry)
   local value = snapshot.toc
   if snapshot.tocProtocol ~= 1 or not value then return nil end
   entry = entry or {}
+  local lines = snapshot.tocLines or 10
+  local resized = entry.toc_lines and entry.toc_lines ~= lines
+  entry.toc_lines = lines
   local same = entry.toc_thread == value.threadId
   local versions, reveals = {}, {}
   for _, node in nodes(value) do
     local version = node.title .. ":" .. tostring(node.visits)
     versions[node.id] = version
-    if same and entry.toc_versions then
+    if same and not resized and entry.toc_versions then
       if entry.toc_versions[node.id] ~= version then reveals[node.id] = value.revision
       elseif entry.toc_reveals then reveals[node.id] = entry.toc_reveals[node.id] end
     end
@@ -27,11 +30,19 @@ function toc.view(snapshot, entry)
   entry.toc_closed = entry.toc_closed or {}
   local closed = entry.toc_closed[value.threadId] or {}; entry.toc_closed[value.threadId] = closed
   local content = {}
+  local selected = value.location and value.location.nodeId
+  for _, topic in value.topics or {} do
+    if closed[topic.id] then
+      for _, child in topic.children or {} do
+        if selected == child.id then selected = topic.id; break end
+      end
+    end
+  end
   local enabled = snapshot.connected and snapshot.canSwitch and (not entry.selection or entry.selection.id == value.threadId)
   local function heading(node, child)
-    local selected = value.location and value.location.nodeId == node.id
+    local active = selected == node.id
     local row = {k = "row", p = {key = "heading-" .. node.id, role = if child then "codex-tern.toc.child" else "codex-tern.toc.topic",
-      align = "start", gap = "xs", mark = if selected then "pick" else nil}, c = {}}
+      align = "start", gap = "xs", mark = if active then "pick" else nil}, c = {}}
     if not child then
       table.insert(row.c, {k = "icon", p = {key = "fold", role = "codex-tern.toc.fold",
         name = if closed[node.id] then "chev-r" else "chev", hidden = #(node.children or {}) == 0,
@@ -67,14 +78,17 @@ function toc.view(snapshot, entry)
       text = if value.enabled then "Retry" else "Get TOC", mark = if enabled then nil else "disabled",
       actions = if enabled then {click = "toc-get"} else nil}})
   end
-  return {k = "col", p = {key = "toc", role = "codex-tern.toc"}, c = {
+  return {k = "col", p = {key = "toc", role = "codex-tern.toc", mark = snapshot.tocClient}, c = {
     {k = "row", p = {key = "head", role = "codex-tern.toc.head", align = "center", gap = "sm"}, c = {
       {k = "text", p = {key = "title", grow = 1, text = "This session"}},
       {k = "text", p = {key = "status", role = "codex-tern.toc.status", text = if value.updating then "Updating…" else ""}},
       {k = "icon", p = {key = "menu", name = "more", title = "TOC options", hidden = not value.enabled,
         actions = if enabled and not value.updating then {menu = {"Rebuild TOC"}} else nil}},
     }},
-    {k = "col", p = {key = "body", role = "codex-tern.toc.body", hidden = #content == 0}, c = content},
+    -- Native lists reveal a new selection, but do not re-reveal it when max shrinks.
+    -- A new size gets a fresh bounded list, with the same current heading selected.
+    {k = "list", p = {key = "body-" .. tostring(lines), role = "codex-tern.toc.body", hidden = #content == 0,
+      max = {lines = lines}, selected = if selected then "main.toc.body-" .. tostring(lines) .. ".heading-" .. selected else nil}, c = content},
     {k = "col", p = {key = "footer", role = "codex-tern.toc.footer", hidden = #footer == 0}, c = footer},
   }}
 end

@@ -7,7 +7,7 @@ import type { Turn } from './generated/v2/Turn';
 import type { ThreadTurnsListResponse } from './generated/v2/ThreadTurnsListResponse';
 import { record } from './protocol';
 import { outlineBatches, outlineContext, outlineFromHistory, outlineHash, outlineInstructions, outlineSchema,
-  validateOutline, type OutlineNode, type OutlineRecord, type OutlineTurn } from './session-outline';
+  validateOutline, outlineLocations, type OutlineLocation, type OutlineNode, type OutlineRecord, type OutlineTurn } from './session-outline';
 
 interface Pending { model: AuxiliaryModel; turns: OutlineTurn[]; full: boolean; rebuild: boolean }
 interface State {
@@ -23,6 +23,7 @@ const shape = (value: OutlineRecord['topics']) => value.map(n => ({ ...visible(n
 export class SessionOutlines {
   private readonly states = new Map<string, State>();
   private readonly removed = new Set<string>();
+  private readonly locations = new WeakMap<OutlineRecord, Map<string, OutlineLocation>>();
   constructor(private readonly agent: AuxiliaryAgent, private readonly rpc: CodexRpc,
     private readonly changed: () => void, readonly directory?: string, private readonly debounceMs = 350) {}
 
@@ -114,6 +115,14 @@ export class SessionOutlines {
     if (!value || value.revision !== revision || !Number.isInteger(visit) || visit < 0) return;
     const node = value.topics.flatMap(n => [n, ...n.children]).find(n => n.id === nodeId);
     return node?.anchors[visit];
+  }
+
+  location(id: string, prompt: string) {
+    const value = this.states.get(id)?.record;
+    if (!value) return;
+    let locations = this.locations.get(value);
+    if (!locations) { locations = outlineLocations(value); this.locations.set(value, locations); }
+    return locations.get(prompt);
   }
 
   private async history(id: string, signal: AbortSignal) {

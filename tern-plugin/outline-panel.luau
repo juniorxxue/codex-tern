@@ -39,6 +39,13 @@ function outline.update(cx, bridge)
     elseif state.raw ~= entry.raw then
       paint(cx, pane, entry, state.snapshot); entry.raw = state.raw
     end
+    if state and state.snapshot.tocFollowProtocol == 1 and state.snapshot.toc and #(state.snapshot.toc.topics or {}) > 0 then
+      local card, focused = cx.session:pane(pane), cx.session:pane(cx.session:focused())
+      if card and focused and not card.parked and card.tab == focused.tab and tern.now() - (entry.followed or 0) >= 200 then
+        entry.followed = tern.now()
+        cx.session:event(entry.target, {sf = state.sf, ev = "action", id = "dock.sessions", act = "toc-follow"})
+      end
+    end
   end
 end
 function outline.open(cx, target, neighbour, state)

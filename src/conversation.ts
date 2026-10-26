@@ -90,27 +90,6 @@ export class Conversation extends EventEmitter {
     try { await action(); } catch (e) { this.notice(e instanceof Error ? e.message : String(e), true); }
   }
 
-  async connect() {
-    await this.rpc.start();
-    await this.readAccountAndModels();
-  }
-
-  async readAccountAndModels() {
-    const results = await Promise.allSettled([
-      this.rpc.request('account/read', { refreshToken: false }),
-      this.rpc.request('model/list', {}),
-    ]);
-    const [account, models] = results;
-    if (account.status === 'fulfilled') {
-      const a = account.value;
-      this.account = a.account?.type === 'chatgpt' ? `ChatGPT · ${a.account.planType ?? 'Signed in'}`
-        : a.account?.type ?? (a.requiresOpenaiAuth ? 'Sign in with codex login' : 'Connected');
-    } else this.account = 'Account unavailable';
-    if (models.status === 'fulfilled') this.models = models.value.data ?? [];
-    else this.notice(`Could not load models: ${models.reason.message}`, true);
-    this.connection = 'ready'; this.changed();
-  }
-
   adopt(result: ThreadStartResponse) {
     this.thread = result.thread; this.effective = result; this.cwd = result.cwd;
   }
