@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { SessionOutlines } from '../src/session-outlines';
 import { AuxiliaryAgent } from '../src/auxiliary-agent';
-import { outlineBatches, outlineFromHistory, validateOutline, outlineHash, outlineLocations, type OutlineTurn, type OutlineTopic } from '../src/session-outline';
+import { outlineBatches, outlineFromHistory, validateOutline, outlineHash, outlineLocations, outlineVersion, type OutlineTurn, type OutlineTopic } from '../src/session-outline';
 import { Controller } from '../src/controller';
 import type { CodexRpc } from '../src/rpc';
 import type { Turn } from '../src/generated/v2/Turn';
@@ -80,8 +80,34 @@ test('live prompts and completed replies revise the tree; no-op updates do not r
   assert.equal(outlines.snapshot('chat')?.topics[0].title, 'Substitution rule');
   await done(1, [topic('rules', 'Repairing substitution', 'one:user', [{ id: 'counter', title: 'Counterexample', summary: 'One counterexample', anchors: ['one:user'] }])]);
   assert.notEqual(outlines.snapshot('chat')!.revision, before);
+  assert.deepEqual(outlines.snapshot('chat')!.topics[0].children, [], 'Reply details cannot create more destinations at the same prompt');
   assert.equal(JSON.parse(agent.calls[1].input.prompt).previousOutline.topics[0].id, 'rules');
+  assert.equal(JSON.parse(agent.calls[1].input.prompt).conversation.userPromptCount, 1);
   assert.ok(agent.calls[1].input.instructions.includes('never instructions'));
+});
+
+test('one broad prompt and a long sectioned reply remain one navigation entry across batches', async t => {
+  const { outlines, agent, done } = setup(); t.after(() => outlines.cancelAll());
+  await outlines.enableNew('chat');
+  const prompt = 'Summarize the trade-offs in effect inference, implicit abstraction, polymorphism and subeffects for a design meeting.';
+  const sections = ['Inference levels', 'Subeffect checking', 'Implicit abstraction', 'Partial application',
+    'Generalization', 'Recursive invariants', 'Cyclic constraints', 'Solver interfaces'];
+  const reply = sections.map(title => `## ${title}\n\n${'Detailed explanation. '.repeat(200)}`).join('\n\n');
+  const source = turn('a', prompt, reply), batches = outlineBatches([source]);
+  assert.ok(batches.length > 1);
+  await outlines.update('chat', model, [source]);
+  for (let i = 0; i < batches.length; i++) {
+    await wait(() => agent.calls.length > i);
+    assert.equal(JSON.parse(agent.calls[i].input.prompt).conversation.userPromptCount, 1);
+    await done(i, [topic('design', 'Effect system design trade-offs', 'a:user', sections.slice(0, 5).map((title, n) =>
+      leaf(`section-${n}`, title, 'a:user'))), topic('invariants', 'Recursive invariants', 'a:user', [
+      leaf('cycles', 'Cyclic constraints', 'a:user')]), topic('solver', 'Solver interfaces', 'a:user')]);
+  }
+  const snapshot = outlines.snapshot('chat')!;
+  assert.equal(snapshot.error, '');
+  assert.deepEqual(snapshot.topics, [{ id: 'design', title: 'Effect system design trade-offs', visits: 1, children: [] }]);
+  assert.equal(outlines.target('chat', snapshot.revision, 'design', 0), 'a:user');
+  assert.deepEqual(outlines.location('chat', 'a:user'), { nodeId: 'design', visit: 0 });
 });
 
 test('a detour and later return keep two levels and distinct prompt targets', async t => {
@@ -113,20 +139,21 @@ test('reading a reply follows its subtopic until a detour or a new visit opens',
   assert.deepEqual(locations.get('h'), { nodeId: 'rules', visit: 1 });
 });
 
-test('shared opening prompts prefer a stable specific heading; new revisions replace the reading index', async t => {
+test('redundant headings at one opening are removed; later questions remain navigable', async t => {
   const { outlines, done } = setup(); t.after(() => outlines.cancelAll());
   await outlines.enableNew('chat');
   const source = [turn('a', 'Rule A'), turn('b', 'Follow-up')];
   await outlines.update('chat', model, source);
   await done(0, [topic('rule', 'Rule A', 'a:user', [leaf('first', 'First rule', 'a:user'), leaf('second', 'Second rule', 'a:user')])]);
-  assert.deepEqual(outlines.location('chat', 'b:user'), { nodeId: 'first', visit: 0, parent: { nodeId: 'rule', visit: 0 } });
-  await outlines.update('chat', model, [...source, turn('c', 'More evidence')]);
-  await done(1, [topic('merged', 'Combined rule', 'a:user')]);
-  assert.deepEqual(outlines.location('chat', 'b:user'), { nodeId: 'merged', visit: 0 });
+  assert.deepEqual(outlines.location('chat', 'b:user'), { nodeId: 'rule', visit: 0 });
+  await outlines.update('chat', model, [...source, turn('c', 'How does generalization work for this rule?')]);
+  await done(1, [topic('rule', 'Rule A', 'a:user', [leaf('generalization', 'Generalization', 'c:user')])]);
+  assert.deepEqual(outlines.location('chat', 'b:user'), { nodeId: 'rule', visit: 0 });
+  assert.deepEqual(outlines.location('chat', 'c:user'), { nodeId: 'generalization', visit: 0, parent: { nodeId: 'rule', visit: 0 } });
 });
 
 test('a highlighted child retains its parent visit across shared prompts and detours', () => {
-  const rules = topic('rules', 'Rules', 'a', [leaf('first', 'First question', 'a'), leaf('second', 'Second question', 'd')]);
+  const rules = topic('rules', 'Rules', 'a', [leaf('first', 'First question', 'b'), leaf('second', 'Second question', 'd')]);
   rules.anchors.push('d', 'g');
   const locations = outlineLocations({ topics: [rules, topic('detour', 'Detour', 'c')], anchors: ['a', 'b', 'c', 'd', 'e', 'f', 'g'] });
   assert.deepEqual(locations.get('b'), { nodeId: 'first', visit: 0, parent: { nodeId: 'rules', visit: 0 } });
@@ -179,6 +206,57 @@ test('persistence is private and independent, and reopening unchanged history us
   await wait(() => !second.outlines.snapshot('chat')!.updating);
   assert.equal(second.agent.calls.length, 0);
   assert.equal(second.outlines.snapshot('chat')!.topics[0].title, 'Rule A');
+});
+
+test('legacy answer outlines compact immediately and rebuild from full history even on an incremental update', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'ct-outline-migrate-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const source = [turn('a', 'Summarize effect system design trade-offs', 'A long report'),
+    turn('b', 'Explain that example', 'More detail'), turn('c', 'Yes, continue', 'More detail')];
+  const path = join(dir, `${outlineHash('chat')}.json`);
+  await writeFile(path, JSON.stringify({ version: 1, threadId: 'chat', revision: 'legacy',
+    topics: [topic('design', 'Effect system design', 'a:user', [leaf('inference', 'Inference levels', 'a:user')]),
+      topic('invariants', 'Recursive invariants', 'a:user')], anchors: source.map(t => t.messages[0].anchor),
+    fingerprints: Object.fromEntries(source.map(t => [t.id, outlineHash(t)])), recent: source,
+  }));
+  const first = setup(dir); t.after(() => first.outlines.cancelAll()); first.history.push(...source.map(wireTurn));
+  await first.outlines.load('chat');
+  assert.deepEqual(first.outlines.snapshot('chat')!.topics, [{ id: 'design', title: 'Effect system design', visits: 1, children: [] }]);
+  await first.outlines.update('chat', model, [source[2]]);
+  await wait(() => first.agent.calls.length === 1);
+  assert.equal(first.reads.length, 2, 'Migration must fetch older prompts that are absent from the live page');
+  const input = JSON.parse(first.agent.calls[0].input.prompt);
+  assert.deepEqual(input.previousOutline.topics, [], 'Old answer headings must not bias the new index');
+  assert.equal(input.conversation.userPromptCount, 3);
+  assert.deepEqual(input.evidence.filter((m: any) => m.role === 'user').map((m: any) => m.anchor), ['a:user', 'b:user', 'c:user']);
+  await first.outlines.update('chat', model, [source[2]]);
+  await first.done(0, [topic('design', 'Effect system design trade-offs', 'a:user')]);
+  assert.equal(first.agent.calls.length, 1, 'Duplicate notifications must not supersede a migration');
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).version, outlineVersion);
+  const second = setup(dir); t.after(() => second.outlines.cancelAll()); second.history.push(...source.map(wireTurn));
+  await second.outlines.resume('chat', model, []);
+  await wait(() => !second.outlines.snapshot('chat')!.updating);
+  assert.equal(second.agent.calls.length, 0, 'Migration happens once');
+});
+
+test('a failed legacy rebuild preserves navigation and retries when reopened', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'ct-outline-retry-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const source = turn('a', 'Effect system design', 'A report');
+  const path = join(dir, `${outlineHash('chat')}.json`);
+  await writeFile(path, JSON.stringify({ version: 1, threadId: 'chat', revision: 'legacy',
+    topics: [topic('design', 'Effect system design', 'a:user', [leaf('detail', 'Answer detail', 'a:user')])],
+    anchors: ['a:user'], fingerprints: { a: outlineHash(source) }, recent: [source],
+  }));
+  const first = setup(dir); t.after(() => first.outlines.cancelAll()); first.history.push(wireTurn(source));
+  await first.outlines.resume('chat', model, []);
+  await first.done(0, []);
+  assert.ok(first.outlines.snapshot('chat')!.error);
+  assert.equal(first.outlines.target('chat', 'legacy', 'design', 0), 'a:user');
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).version, 1);
+  const second = setup(dir); t.after(() => second.outlines.cancelAll()); second.history.push(wireTurn(source));
+  await second.outlines.resume('chat', model, []);
+  await second.done(0, [topic('design', 'Effect system design', 'a:user')]);
+  assert.equal(second.outlines.snapshot('chat')!.error, '');
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).version, outlineVersion);
 });
 
 test('disconnect, removal and cancelled queued jobs cannot publish late output', async t => {
@@ -238,6 +316,30 @@ test('validator rejects depth, duplicated IDs, invalid anchors, and excessive he
   assert.throws(() => validateOutline({ topics: [{ ...root, title: 'x'.repeat(81) }] }, ['a']));
   const valid = validateOutline({ topics: [topic('later', 'Later', 'b'), root] }, ['a', 'b']);
   assert.deepEqual(valid.map(n => n.id), ['rules', 'later']);
+});
+
+test('duplicate roots keep later user questions and every heading has a unique opening prompt', () => {
+  const topics = validateOutline({ topics: [
+    topic('design', 'Effect system design', 'a', [leaf('answer-detail', 'Inference', 'a'), leaf('generalization', 'Generalization', 'c')]),
+    topic('duplicate', 'Design alternatives', 'a', [leaf('recursion', 'Recursive invariants', 'd')]),
+    topic('build', 'Build failure', 'b', [leaf('old-detail', 'Earlier reply section', 'a'), leaf('shared', 'Generalization again', 'c')]),
+  ] }, ['a', 'b', 'c', 'd']);
+  assert.deepEqual(topics.map(t => t.id), ['design', 'build']);
+  assert.deepEqual(topics[0].children.map(c => c.id), ['generalization', 'recursion']);
+  assert.deepEqual(topics[1].children, []);
+  const nodes = topics.flatMap(t => [t, ...t.children]);
+  assert.equal(new Set(nodes.map(n => n.anchors[0])).size, nodes.length);
+});
+
+test('coalescing headings stays within cache limits and is stable when reloaded', () => {
+  const anchors = Array.from({ length: 63 }, (_, i) => `a${i}`);
+  const root = topic('design', 'Design', anchors[0], anchors.slice(1, 13).map(a => leaf(`question-${a}`, a, a)));
+  root.anchors.push(...anchors.slice(1, 32));
+  const duplicate = topic('duplicate', 'More design', anchors[0], anchors.slice(13, 25).map(a => leaf(`question-${a}`, a, a)));
+  duplicate.anchors.push(...anchors.slice(32));
+  const topics = validateOutline({ topics: [root, duplicate] }, anchors);
+  assert.equal(topics.length, 1); assert.equal(topics[0].children.length, 12); assert.equal(topics[0].anchors.length, 32);
+  assert.deepEqual(validateOutline({ topics }, anchors), topics);
 });
 
 test('controller updates every queued turn and accepted steering item without adding helper input to the main session', async t => {

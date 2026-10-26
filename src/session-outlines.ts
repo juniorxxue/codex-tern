@@ -6,7 +6,7 @@ import type { CodexRpc } from './rpc';
 import type { Turn } from './generated/v2/Turn';
 import type { ThreadTurnsListResponse } from './generated/v2/ThreadTurnsListResponse';
 import { record } from './protocol';
-import { outlineBatches, outlineContext, outlineFromHistory, outlineHash, outlineInstructions, outlineSchema,
+import { outlineBatches, outlineContext, outlineFromHistory, outlineHash, outlineInstructions, outlineSchema, outlineVersion,
   validateOutline, outlineLocations, type OutlineLocation, type OutlineNode, type OutlineRecord, type OutlineTurn } from './session-outline';
 
 interface Pending { model: AuxiliaryModel; turns: OutlineTurn[]; full: boolean; rebuild: boolean }
@@ -14,7 +14,7 @@ interface State {
   record?: OutlineRecord; loading?: Promise<void>; error: string; updating: boolean; version: number;
   pending?: Pending; active?: Pending; timer?: ReturnType<typeof setTimeout>; abort?: AbortController; writing: Promise<void>;
 }
-const empty = (threadId: string): OutlineRecord => ({ version: 1, threadId, revision: '', topics: [], anchors: [], fingerprints: {}, recent: [] });
+const empty = (threadId: string): OutlineRecord => ({ version: outlineVersion, threadId, revision: '', topics: [], anchors: [], fingerprints: {}, recent: [] });
 const visible = (node: OutlineNode) => ({ id: node.id, title: node.title, visits: node.anchors.length });
 const shape = (value: OutlineRecord['topics']) => value.map(n => ({ ...visible(n), anchors: n.anchors,
   children: n.children.map(c => ({ ...visible(c), anchors: c.anchors })) }));
@@ -39,7 +39,7 @@ export class SessionOutlines {
       if (!path) return;
       try {
         const data: unknown = JSON.parse(await readFile(path, 'utf8'));
-        if (!record(data) || data.version !== 1 || data.threadId !== id || typeof data.revision !== 'string'
+        if (!record(data) || (data.version !== 1 && data.version !== outlineVersion) || data.threadId !== id || typeof data.revision !== 'string'
           || !Array.isArray(data.anchors) || !data.anchors.every(a => typeof a === 'string') || !record(data.fingerprints)
           || !Object.values(data.fingerprints).every(x => typeof x === 'string') || !Array.isArray(data.recent))
           throw new Error('Invalid TOC cache');
@@ -49,7 +49,7 @@ export class SessionOutlines {
         const recent = data.recent.filter(t => record(t) && typeof t.id === 'string' && typeof t.status === 'string'
           && Array.isArray(t.messages) && t.messages.every((m: unknown) => record(m) && typeof m.role === 'string' && ['user', 'assistant'].includes(m.role)
             && typeof m.text === 'string' && typeof m.anchor === 'string' && anchors.includes(m.anchor))) as OutlineTurn[];
-        state.record = { version: 1, threadId: id, revision: data.revision, topics,
+        state.record = { version: data.version, threadId: id, revision: data.revision, topics,
           anchors, fingerprints: data.fingerprints as Record<string, string>, recent: outlineContext(recent) };
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') state.error = 'Saved TOC unavailable. Get TOC to rebuild.';
@@ -98,12 +98,14 @@ export class SessionOutlines {
   }
 
   private enqueue(id: string, state: State, pending: Pending) {
+    const outdated = state.record?.version !== outlineVersion;
     // Duplicate user item/started + item/completed notifications do not spend another request.
     const scheduled = state.pending ?? state.active;
     if (!pending.full && !pending.rebuild && !state.error && pending.turns.every(t =>
       (scheduled?.turns.find(p => p.id === t.id) && outlineHash(scheduled.turns.find(p => p.id === t.id)) === outlineHash(t))
-      || state.record?.fingerprints[t.id] === outlineHash(t))) return;
-    state.pending = { ...pending, full: pending.full || !!state.pending?.full, rebuild: pending.rebuild || !!state.pending?.rebuild };
+      || (!outdated && state.record?.fingerprints[t.id] === outlineHash(t))) && (!outdated || scheduled)) return;
+    state.pending = { ...pending, full: pending.full || outdated || !!state.pending?.full,
+      rebuild: pending.rebuild || outdated || !!state.pending?.rebuild };
     state.version++; state.error = ''; state.updating = true;
     if (state.timer) clearTimeout(state.timer);
     if (!state.abort) state.timer = setTimeout(() => { state.timer = undefined; void this.run(id, state); }, this.debounceMs);
@@ -168,7 +170,7 @@ export class SessionOutlines {
         if (!current()) return;
         const value = await this.agent.generate({ ...job.model, source: 'thread_outline', timeoutMs: 60_000,
           instructions: outlineInstructions, schema: outlineSchema,
-          prompt: JSON.stringify({ previousOutline: { topics }, recentContext: base.recent,
+          prompt: JSON.stringify({ conversation: { userPromptCount: anchors.length }, previousOutline: { topics }, recentContext: base.recent,
             batch: index + 1, batches: batches.length, evidence }),
         }, abort.signal);
         if (!current()) return;
@@ -178,7 +180,7 @@ export class SessionOutlines {
       if (!anchors.length && job.full) throw new Error('No prompts to index yet');
       const fingerprints = { ...(job.full ? {} : base.fingerprints) };
       for (const turn of source) fingerprints[turn.id] = outlineHash(turn);
-      const result: OutlineRecord = { version: 1, threadId: id, topics, anchors, fingerprints,
+      const result: OutlineRecord = { version: outlineVersion, threadId: id, topics, anchors, fingerprints,
         recent: outlineContext(source.length ? source : base.recent),
         revision: outlineHash(shape(topics)) === outlineHash(shape(old.topics)) ? old.revision : randomUUID() };
       if (!current()) return;
