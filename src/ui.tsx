@@ -23,8 +23,6 @@ import { ompNode } from './omp-native';
 import { transcriptParts, activitySummary, compactActivity, type TranscriptPart } from './activity';
 import { appearanceStyles } from './appearance';
 import { assistantMarkdown } from './assistant-markdown';
-import { FileMarkdown } from './file-markdown';
-import { showInFinder } from './file-links';
 import { assistantParts } from './proposals';
 import { ProposalView } from './proposal-view';
 import { runPluginCommand } from './tern-plugin';
@@ -490,9 +488,9 @@ export class NativeUI {
     let number = 0;
     return <col key={entry.id} role="omp.assistant" gap="xs">
       {parts.map(part => {
-        if (part.kind === 'markdown') return <FileMarkdown key={`text-${part.start}`}
-          text={assistantMarkdown(part.text, this.c.cwd)} cwd={this.c.cwd} stream={!entry.done}
-          onReveal={path => this.action(() => showInFinder(path))} />;
+        if (part.kind === 'markdown') return <md key={`text-${part.start}`}
+          text={assistantMarkdown(part.text, this.c.cwd)} stream={!entry.done}
+          actions={{ menu: ['copy'] }} />;
         const id = ids[number++]!;
         return <ProposalView key={`proposal-${part.start}`} before={part.before} after={part.after}
           number={number} checked={selection.has(id)} disabled={disabled} onSelect={checked => {
@@ -550,8 +548,7 @@ export class NativeUI {
               : 'url' in p && p.url.startsWith('data:') ? this.imageNode(p.url)
               : <text key={`unavailable-${n}`} tone="muted" text="Image unavailable" />)}
           </row>}
-          {!!text && <FileMarkdown key="text" text={text} cwd={this.c.cwd}
-            onReveal={path => this.action(() => showInFinder(path))} />}
+          {!!text && <md key="text" text={text} actions={{ menu: ['copy'] }} />}
           {entry.delivery && <text key="delivery" role="ct.user.delivery" tone="muted"
             text={entry.delivery === 'sending' ? 'Sending…' : 'Waiting for Codex…'} />}
         </col>

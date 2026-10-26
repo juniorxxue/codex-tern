@@ -1,7 +1,7 @@
 // Native Tern UI regression tests, using a deterministic app-server fixture.
 // Real Codex is covered separately by smoke.ts and manual native conversations.
 import { spawn, execFileSync } from 'node:child_process';
-import { chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
@@ -18,13 +18,6 @@ const wire = resolve(out, 'client-wire.jsonl');
 await writeFile(wire, '');
 const rpcLog = resolve(out, `rpc-${process.pid}.jsonl`);
 await writeFile(rpcLog, '');
-// Record the OS reveal request without opening Finder during automated QA.
-const openLog = resolve(out, `open-${process.pid}.jsonl`);
-const openBin = resolve(out, `bin-${process.pid}`);
-await mkdir(openBin, { recursive: true });
-await writeFile(openLog, '');
-await writeFile(resolve(openBin, 'open'), `#!${process.execPath}\nimport { appendFileSync } from 'node:fs';\nappendFileSync(process.env.QA_OPEN_LOG, JSON.stringify(process.argv.slice(2)) + '\\n');\n`);
-await chmod(resolve(openBin, 'open'), 0o755);
 // Update only a private build when testing real code replacement and rollback.
 const clientDist = resolve(out, `client-${process.pid}/dist`);
 await mkdir(clientDist, { recursive: true });
@@ -116,7 +109,7 @@ async function editCase(name, initial, operations, expected) {
 
 try {
   await waitFor(() => { try { execFileSync('test', ['-S', socket]); return true; } catch { return false; } }, 'Tern control socket');
-  const command = ['env', `PATH=${openBin}:${process.env.PATH}`, `QA_OPEN_LOG=${openLog}`, `TERN_TSP_RECORD=${wire}`, `QA_RPC_LOG=${rpcLog}`, `QA_HISTORY_FILE=${resolve(out, `history-${process.pid}.json`)}`, process.execPath, resolve(clientDist, 'cli.mjs'), '--codex',
+  const command = ['env', `TERN_TSP_RECORD=${wire}`, `QA_RPC_LOG=${rpcLog}`, `QA_HISTORY_FILE=${resolve(out, `history-${process.pid}.json`)}`, process.execPath, resolve(clientDist, 'cli.mjs'), '--codex',
     `${root}/test/fixtures/ui-app-server.mjs`].map(value => "'" + value.replaceAll("'", "'\\''") + "'").join(' ');
   ctl(`run ${JSON.stringify(command)}`);
   await waitFor(() => text('.sf-dock').includes('QA Model'), 'composer');
@@ -149,14 +142,6 @@ try {
   assert.ok(text(citationLink).includes('中文 [draft] (1) #?& 100%.txt'));
   assert.ok(text('[data-role="omp.assistant"] code').includes(':codex-file-citation'));
   ctl('shot assistant-file-citation');
-  click(`${citationLink} right`);
-  assert.ok(text('[role="menu"]').includes('Show in Finder'));
-  ctl('wait 200');
-  ctl('shot file-link-menu');
-  click('[role="menuitem"]:nth-child(2)');
-  await waitFor(() => readFileSync(openLog, 'utf8').trim().length > 0, 'Finder reveal request');
-  assert.deepEqual(JSON.parse(readFileSync(openLog, 'utf8').trim()),
-    ['-R', resolve(out, '中文 [draft] (1) #?& 100%.txt')]);
   click(citationLink);
   await waitFor(() => tree('section.tn-pane.file').length === 1, 'citation opens its local file');
   assert.equal(tree('.ed-loc')[0].title, resolve(out, '中文 [draft] (1) #?& 100%.txt') + '  ⌘L');
@@ -164,22 +149,37 @@ try {
   await waitFor(() => tree('section.tn-pane.file').length === 0, 'close the citation preview');
   pass('streaming and completed citations open the exact local file; code examples stay literal');
   await writeFile(resolve(out, 'second.txt'), 'First line\nSecond line\n');
-  await send('QA_FILE_LINKS_FIXTURE');
-  const secondLink = '[data-role="ct.file-link"][title="' + resolve(out, 'second.txt') + '"] a';
+  await send(String.raw`QA_FILE_LINKS_FIXTURE [Source](./README.md) with \((V:T)\).`);
+  const secondLink = '[data-role="omp.assistant"] a[href="./.prototype/ui-qa/second.txt:2:1"]';
   await waitFor(() => tree(secondLink).length === 1, 'second link in a paragraph');
   assert.ok(text('[data-role="omp.assistant"]').includes('First and Second'));
-  click(`${secondLink} right`);
-  assert.ok(text('[role="menu"]').includes('Show in Finder'));
-  click('[role="menuitem"]:nth-child(2)');
-  await waitFor(() => readFileSync(openLog, 'utf8').trim().split('\n').length === 2, 'second file reveal');
-  assert.deepEqual(JSON.parse(readFileSync(openLog, 'utf8').trim().split('\n')[1]), ['-R', resolve(out, 'second.txt')]);
   const webLink = '[data-role="omp.assistant"] a[href="https://example.com"]';
-  click(`${webLink} right`);
-  assert.ok(!text('[role="menu"]').includes('Show in Finder'));
-  key('escape');
-  ctl('wait 200');
+  assert.equal(text(webLink), 'web');
+  const assertMessageMath = () => {
+    assert.equal(tree('[data-role="omp.assistant"] .math-err, [data-role="omp.user"] .math-err').length, 0);
+    for (const [role, count] of [['omp.assistant', 3], ['omp.user', 1]]) {
+      const formulas = tree(`[data-role="${role}"] .math svg`);
+      assert.equal(formulas.length, count, `${role} formulas beside file links survive`);
+      for (const formula of formulas) assert.ok(formula.rect[2] > 8 && formula.rect[3] > 8,
+        `${role} formulas retain readable size beside file links`);
+    }
+    assert.equal(tree('[data-role="omp.assistant"] td .math svg').length, 2, 'table formulas survive');
+    assert.equal(text('[data-role="omp.assistant"] strong'), 'Second');
+    assert.equal(text('[data-role="omp.assistant"] td code'), 'P');
+  };
+  assertMessageMath();
   ctl('shot file-links-in-prose');
-  pass('right-click menus reveal the clicked file, preserve inline spaces, strip line numbers and exclude web links');
+  click(secondLink);
+  await waitFor(() => tree('section.tn-pane.file').length === 1, 'native Markdown opens the second file link');
+  assert.equal(tree('.ed-loc')[0].title, resolve(out, 'second.txt') + '  ⌘L');
+  ctl(`carly lua ${JSON.stringify('for _, pane in cx.session:panes() do if pane.kind == "file" then cx.layout:close(pane.pane) end end')}`); ctl('carly close');
+  await waitFor(() => tree('section.tn-pane.file').length === 0, 'close the second file preview');
+  pass('native Markdown preserves links, emphasis, code and formulas in prose and tables');
+  key('ctrl+q'); await pause(300); ctl('ready'); ctl(`run ${JSON.stringify(command)}`);
+  await waitFor(() => tree(secondLink).length === 1 && text('.sf-dock').includes('QA Model'), 'restore messages containing file links and math');
+  assertMessageMath();
+  ctl('shot restored-markdown');
+  pass('restored user and assistant messages keep formulas beside file links');
   key('ctrl+shift+n');
   await waitFor(() => tree('[data-role="omp.welcome"]').length === 1, 'blank session after citation fixture');
 

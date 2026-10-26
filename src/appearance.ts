@@ -129,25 +129,6 @@ export const appearanceStyles = css`
   }
   .sf.sf-col[data-role="omp.assistant"] > .sf-md,
   .sf.sf-card[data-role="omp.user"] > .sf-md { gap: 16px; }
-  .ct-file-markdown { display: flex; flex-direction: column; gap: 16px; }
-  .ct-file-markdown .ct-file-block {
-    font-family: var(--ct-prose); font-size: 17px; line-height: 29px; color: var(--t1); letter-spacing: 0;
-  }
-  .ct-file-block > p { margin: 0; }
-  .ct-file-numbered { display: flex; gap: 8px; align-items: baseline; }
-  .ct-file-numbered > .li-t { min-width: 0; }
-  .ct-file-numbered + .ct-file-numbered { margin-top: 6px; }
-  .ct-file-align-left { text-align: left; }
-  .ct-file-align-center { text-align: center; }
-  .ct-file-align-right { text-align: right; }
-  .ct-file-markdown > .sf-md { gap: 16px; }
-  .ct-file-inline, .ct-file-inline > .sf-md,
-  .ct-file-inline > .sf-md > .md, .ct-file-inline > .sf-md > .md > p {
-    display: inline; margin: 0; padding: 0; font: inherit; color: inherit;
-  }
-  .ct-file-block .ct-file-block { margin: 0; }
-  .ct-markdown-link { color: var(--sf-c-link); text-decoration: underline; cursor: pointer; }
-  .ct-markdown-link .sf-md .md { color: var(--sf-c-link) !important; }
   .sf.sf-row[data-role="ct.reply.actions"] { margin-top: 8px; }
   .ct-reply-action {
     display: inline-flex; align-items: center; gap: 6px;

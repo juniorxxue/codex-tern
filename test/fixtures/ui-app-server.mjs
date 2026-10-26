@@ -256,7 +256,13 @@ createInterface({ input: process.stdin }).on('line', line => {
         add({ id: `answer-${turn.id}`, type: 'agentMessage', phase: 'final_answer', text: 'Read ' + citation.slice(0, -5) }, false);
         setTimeout(() => finish('Read ' + citation + '\n\nExample: `' + citation + '`'), 100);
       } else if (text.includes('QA_FILE_LINKS_FIXTURE')) {
-        finish('[First](./README.md) and **[Second](./.prototype/ui-qa/second.txt:2:1)**; [web](https://example.com).');
+        finish([
+          String.raw`[First](./README.md) and **[Second](./.prototype/ui-qa/second.txt:2:1)**; [web](https://example.com). Whole-value ascription \((V:T)\).`,
+          '',
+          '| Current notation | Suggested notation |',
+          '|---|---|',
+          '| [`P` and its later superscript](./README.md) | \\(T_f\\) and \\(T_{\\mathrm{rec}}\\) |',
+        ].join('\n'));
       } else if (text.includes('QA_CONTINUING_TURN')) {
         add({ id: `command-${turn.id}`, type: 'commandExecution', command: 'echo ready', status: 'completed', exitCode: 0 });
         add({ id: `interim-${turn.id}`, type: 'agentMessage', phase: 'final_answer', text: 'QA_INTERIM_ANSWER: Should I change the core rules too?' });

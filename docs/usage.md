@@ -82,7 +82,7 @@ Choose **Islands** in Tern’s **Change interface style** for rounded cards and 
 
 Assistant `codex-file-citation` directives render as clickable local file links, including in restored conversations and streaming replies. File names can contain Chinese, spaces and punctuation. Code examples keep the literal directive.
 
-On macOS, right-click a local file link and choose **Show in Finder** to select that file in Finder. This also works for file links in sent messages. Normal clicks still open the file in Tern.
+Click a local file link in a message to open it in Tern.
 
 Paper revision proposals show two full passages, with red deletions in the original above and green additions in the suggestion below. Check the edits you want and click **Apply selected edits** to draft a request for Codex. The client computes the differences and Tern renders the text and formulas. See [the proposal format and a short AGENTS.md instruction](proposals.md).
 
