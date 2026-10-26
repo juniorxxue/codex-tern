@@ -5,8 +5,10 @@ import { dirname, join } from 'node:path';
 
 export interface SavedInput { id: string; text: string; images: string[] }
 export interface SavedDraft { text: string; images: string[] }
+export interface PendingForkTitle { name: string | null; turnId: string }
 export interface SavedSession {
   id: string; cwd: string; name?: string; preview?: string;
+  pendingForkTitle?: PendingForkTitle;
   draft: SavedDraft; queue: SavedInput[]; unconfirmed: SavedInput[]; inflight?: SavedInput;
 }
 interface RecoveryData { version: 1; selected?: string; notifications: boolean; sessions: SavedSession[] }
@@ -27,6 +29,9 @@ function validate(value: unknown): asserts value is RecoveryData {
     || (value.selected !== undefined && typeof value.selected !== 'string') || !Array.isArray(value.sessions)
     || !value.sessions.every((s: unknown) => object(s) && typeof s.id === 'string' && typeof s.cwd === 'string'
       && (s.name === undefined || typeof s.name === 'string') && (s.preview === undefined || typeof s.preview === 'string')
+      && (s.pendingForkTitle === undefined || (object(s.pendingForkTitle)
+        && (s.pendingForkTitle.name === null || typeof s.pendingForkTitle.name === 'string')
+        && typeof s.pendingForkTitle.turnId === 'string'))
       && draft(s.draft) && Array.isArray(s.queue) && s.queue.every(input)
       && Array.isArray(s.unconfirmed) && s.unconfirmed.every(input) && (s.inflight === undefined || input(s.inflight))))
     throw new Error('Unrecognized recovery file. The original file was left intact.');

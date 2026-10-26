@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { CodexRpc, RpcOutcomeUnknown } from './rpc';
 import { LatestRead } from './latest-read';
+import type { PendingForkTitle } from './recovery';
 import type { RpcId, RpcMessage } from './protocol';
 import type { Thread } from './generated/v2/Thread';
 import type { ThreadItem } from './generated/v2/ThreadItem';
@@ -25,6 +26,7 @@ export class Conversation extends EventEmitter {
   hydrated = false;
   connection: 'connecting' | 'ready' | 'disconnected' = 'connecting';
   thread?: Thread;
+  pendingForkTitle?: PendingForkTitle;
   effective?: ThreadStartResponse;
   models: Model[] = [];
   account = 'Reading account…';
@@ -175,6 +177,11 @@ export class Conversation extends EventEmitter {
       // included, or concatenate it twice. Re-read the same page without mutations.
       if (attempt === 2) throw new Error('History is still changing. Open the session again to reload it.');
     }
+    // A restored fork is eligible only while its history still ends at the fork
+    // point and its inherited name has not been replaced by another client.
+    if (!params.cursor && this.pendingForkTitle
+      && (page.data[0]?.id !== this.pendingForkTitle.turnId
+        || (this.thread.name?.trim() || null) !== this.pendingForkTitle.name)) this.pendingForkTitle = undefined;
     const old: DisplayItem[] = [];
     for (const turn of [...page.data].reverse()) {
       if (!this.endedTurns.has(turn.id)) this.turns.set(turn.id, turn);
@@ -222,8 +229,11 @@ export class Conversation extends EventEmitter {
       ...images.map(path => ({ type: 'localImage' as const, path })),
     ];
     const threadId = this.thread.id;
-    const firstInput = !this.thread.name?.trim() && !this.thread.preview?.trim()
-      && !this.thread.forkedFromId && this.turns.size === 0 && this.items.length === 0;
+    const previousName = this.thread.name?.trim() || null;
+    const forkTitle = this.pendingForkTitle;
+    const firstInput = (forkTitle && forkTitle.name === previousName)
+      || (!previousName && !this.thread.preview?.trim()
+        && !this.thread.forkedFromId && this.turns.size === 0 && this.items.length === 0);
     const turnId = this.activeTurn;
     const outgoing = { id: queuedId ?? randomUUID(), text, images: [...images] };
     const pending: DisplayItem | undefined = turnId ? {
@@ -254,10 +264,12 @@ export class Conversation extends EventEmitter {
         if (!this.endedTurns.has(result.turn.id)) this.activeTurn = result.turn.id;
       }
       if (queuedId) this.queue = this.queue.filter(q => q.id !== queuedId);
+      const nameFirstInput = firstInput && (!forkTitle || this.pendingForkTitle === forkTitle);
+      this.pendingForkTitle = undefined;
       // A new conversation belongs in history only after its first accepted input.
       if (this.thread && !this.thread.preview?.trim()) this.thread.preview = text.trim() || (images.length ? 'Image' : '');
       this.activity();
-      if (firstInput && text.trim()) this.emit('firstInput', text);
+      if (nameFirstInput && text.trim()) this.emit('firstInput', text, previousName);
     } catch (e) {
       if (pending?.delivery) this.items = this.items.filter(i => i !== pending);
       this.queuePaused = true;
@@ -308,6 +320,7 @@ export class Conversation extends EventEmitter {
     if (!input) throw new Error('This message has already been resolved.');
     this.unconfirmed = this.unconfirmed.filter(q => q.id !== id);
     if (retry) this.queue.unshift(input);
+    else this.pendingForkTitle = undefined;
     this.queuePaused = true; this.changed();
   }
 

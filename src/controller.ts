@@ -132,7 +132,7 @@ export class Controller extends EventEmitter {
     }
     let previous = '';
     conversation.on('activity', () => { this.sessionsVersion++; });
-    conversation.on('firstInput', (text: string) => { void this.generateTitle(conversation, text); });
+    conversation.on('firstInput', (text: string, previousName: string | null) => { void this.generateTitle(conversation, text, previousName); });
     conversation.on('completed', (turn: Turn) => {
       if (!conversation.thread || !['completed', 'failed'].includes(turn.status)) return;
       // A queue is one stretch of work. Report success when its last turn ends.
@@ -258,6 +258,7 @@ export class Controller extends EventEmitter {
       const conversation = this.conversation(saved.id);
       conversation.cwd = saved.cwd;
       conversation.thread = { id: saved.id, cwd: saved.cwd, name: saved.name, preview: saved.preview } as Thread;
+      conversation.pendingForkTitle = saved.pendingForkTitle && { ...saved.pendingForkTitle };
       conversation.queue = structuredClone(saved.queue.filter(q => q.id !== saved.inflight?.id));
       conversation.unconfirmed = structuredClone([...new Map([...saved.unconfirmed,
         ...(saved.inflight ? [saved.inflight] : [])].map(q => [q.id, q])).values()]);
@@ -269,6 +270,7 @@ export class Controller extends EventEmitter {
     const thread = conversation.thread;
     if (!this.recovery || !thread || this.isArchived(thread.id)) return;
     this.recovery.update({ id: thread.id, cwd: conversation.cwd, name: thread.name ?? undefined, preview: thread.preview,
+      pendingForkTitle: conversation.pendingForkTitle,
       draft: this.recovery.session(thread.id)?.draft ?? { text: '', images: [] },
       queue: conversation.queue, unconfirmed: conversation.unconfirmed, inflight: conversation.inflight });
   }
@@ -380,7 +382,9 @@ export class Controller extends EventEmitter {
       });
       const next = this.conversation(result.thread.id);
       next.adopt(result);
+      next.pendingForkTitle = { name: result.thread.name?.trim() || null, turnId };
       next.modelOverride = model; next.effortOverride = effort ?? undefined;
+      this.saveConversation(next);
       try { await next.loadHistory(); next.hydrated = true; }
       finally {
         // Creation already succeeded. Keep the fork accessible even if reading
@@ -394,13 +398,13 @@ export class Controller extends EventEmitter {
     this.titleJobs.delete(id);
   }
   private cancelTitles() { for (const id of this.titleJobs.keys()) this.cancelTitle(id); }
-  private async generateTitle(conversation: Conversation, prompt: string) {
+  private async generateTitle(conversation: Conversation, prompt: string, previousName: string | null) {
     const thread = conversation.thread;
-    if (!thread || thread.name?.trim() || this.titleJobs.has(thread.id)) return;
+    if (!thread || (thread.name?.trim() || null) !== previousName || this.titleJobs.has(thread.id)) return;
     const id = thread.id, job = { abort: new AbortController(), name: undefined as string | undefined };
     this.titleJobs.set(id, job);
     const eligible = () => !job.abort.signal.aborted && !this.isArchived(id)
-      && this.connection === 'ready' && !this.find(id)?.thread?.name?.trim();
+      && this.connection === 'ready' && (this.find(id)?.thread?.name?.trim() || null) === previousName;
     try {
       const model = conversation.modelOverride ?? conversation.effective?.model;
       const info = conversation.models.find(m => m.model === model || m.id === model);
@@ -414,12 +418,12 @@ export class Controller extends EventEmitter {
         // Another client may have named the persisted session while generation ran.
         const stored = await this.rpc.request('thread/read', { threadId: id });
         if (!eligible()) return;
-        if (stored.thread.name?.trim()) { this.updateThreadName(id, stored.thread.name); return; }
+        if ((stored.thread.name?.trim() || null) !== previousName) { this.updateThreadName(id, stored.thread.name); return; }
         job.name = name;
         await this.rpc.request('thread/name/set', { threadId: id, name });
         if (!job.abort.signal.aborted && !this.isArchived(id)) this.updateThreadName(id, name);
       });
-    } catch { /* A title is optional. Keep the first-message preview on failure. */ }
+    } catch { /* A title is optional. Keep the current name or preview on failure. */ }
     finally { if (this.titleJobs.get(id) === job) this.titleJobs.delete(id); }
   }
   private queueNameWrite(id: string, write: () => Promise<void>) {
@@ -436,6 +440,7 @@ export class Controller extends EventEmitter {
     if (name && job?.name === name && !job.abort.signal.aborted) {
       if (this.titleChanges.get(id)?.name !== name) this.titleChanges.set(id, { name, revision: randomUUID() });
     } else if (conversation.thread?.name !== name) {
+      conversation.pendingForkTitle = undefined;
       this.cancelTitle(id); this.titleChanges.delete(id);
     }
     conversation.thread!.name = name;
@@ -451,6 +456,8 @@ export class Controller extends EventEmitter {
     this.cancelTitle(id); this.titleChanges.delete(id);
     await this.queueNameWrite(id, async () => {
       await this.rpc.request('thread/name/set', { threadId: id, name });
+      const conversation = this.find(id);
+      if (conversation) conversation.pendingForkTitle = undefined;
       this.updateThreadName(id, name);
     });
   }

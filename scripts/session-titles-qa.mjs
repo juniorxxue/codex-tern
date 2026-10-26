@@ -130,10 +130,34 @@ try {
   ctl('ready'); ctl(`run ${JSON.stringify(command)}`);
   await wait(() => tree(row(generated)).length === 1 && tree(row('我的手动标题')).length === 1, 'saved titles restored');
   assert.equal(tree('[data-role="codex-tern.sessions.reveal"][data-mark="reveal"]').length, 0);
+  pass('saved titles survive relaunch without replaying the animation');
+
+  click(row('Saved session 1'));
+  await wait(() => tree('[data-role="ct.reply.fork"]').length === 1, 'saved reply to fork');
+  click('[data-role="ct.reply.fork"]');
+  const inherited = 'Fork of Saved session 1';
+  await wait(() => tree(selected)[0]?.title === inherited, 'fork keeps its initial title');
+  const forkId = threads().find(t => t.forkedFromId === 'saved-1').id;
+  assert.equal(events().filter(e => e.ephemeral).length, 2, 'forking alone never starts naming');
+  key('Control+q');
+  await wait(() => text('.sf-main').includes('The Codex client is closed.'), 'exit before first fork prompt');
+  ctl('ready'); ctl(`run ${JSON.stringify(command)}`);
+  await wait(() => tree(selected)[0]?.title === inherited && tree('[data-role="ct.fork.origin"]').length === 1, 'uncontinued fork restored');
+  await unlink(release);
+  click(editor); type('hold Explore the first new fork prompt'); key('Enter');
+  await wait(() => events().filter(e => e.ephemeral).length === 3 && threads().find(t => t.id === forkId).turns.length === 2, 'fork prompt starts naming');
+  assert.equal(tree(selected)[0]?.title, inherited, 'initial title remains during generation');
+  await writeFile(release, 'fork title ready');
+  await wait(() => tree(selected)[0]?.title === generated && threads().find(t => t.id === forkId).name === generated, 'fork title saved and displayed');
+  assert.equal(threads().find(t => t.id === 'saved-1').name, 'Saved session 1');
+  assert.equal(tree('[data-role="omp.composer.stop"]').length, 1);
+  assert.equal(events().filter(e => e.method === 'thread/name/set' && e.threadId === forkId).length, 1);
+  ctl('shot fork-title');
+  pass('a fork keeps its initial title across relaunch, then its first new prompt renames only the fork');
+
   const recorded = (await readFile(wire, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   assert.deepEqual(recorded.filter(e => e.dir === 'in' && e.body?.ev === 'error').map(e => e.body), []);
-  ctl('shot title-restored');
-  pass('saved titles survive relaunch without replaying the animation or leaking native protocol errors');
+  pass('title changes do not leak native protocol errors');
 } catch (error) {
   try {
     ctl('shot failed');
