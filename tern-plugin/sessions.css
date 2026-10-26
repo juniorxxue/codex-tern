@@ -85,3 +85,37 @@
 [data-role="codex-tern.sessions.completed"] { color: var(--accent); }
 [data-role="codex-tern.sessions.failed"] { color: var(--bad); }
 [data-role="codex-tern.sessions.note"] { padding: 8px; font-size: 12px; }
+
+/* The TOC is a separate native canvas. Tern owns its frame and scrolling. */
+[data-role="codex-tern.toc"] {
+  padding: 14px 12px; gap: 10px;
+  font-family: "Concourse T3", "LXGW Neo XiHei", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
+  font-size: 14px; line-height: 22px;
+}
+[data-role="codex-tern.toc.head"] { color: var(--t3); font-size: 12px; }
+[data-role="codex-tern.toc.head"] > .sf-icon { width: 14px; height: 14px; color: var(--t3); }
+[data-role="codex-tern.toc.status"] { font-size: 11px; color: var(--t3); }
+[data-role="codex-tern.toc.body"] { gap: 3px; }
+[data-role="codex-tern.toc.topic"], [data-role="codex-tern.toc.child"] {
+  padding: 4px 3px; border-radius: 6px; min-width: 0;
+}
+[data-role="codex-tern.toc.topic"] { margin-top: 4px; color: var(--t1); font-weight: 600; }
+[data-role="codex-tern.toc.child"] { padding-left: 23px; color: var(--t2); font-size: 13px; }
+[data-role="codex-tern.toc.topic"]:hover, [data-role="codex-tern.toc.child"]:hover { background: var(--raise); }
+[data-role="codex-tern.toc.topic"][data-mark="pick"], [data-role="codex-tern.toc.child"][data-mark="pick"] { background: var(--l2); }
+[data-role="codex-tern.toc.fold"] { width: 14px; height: 20px; color: var(--t3); flex-shrink: 0; cursor: pointer; }
+[data-role="codex-tern.toc.link"] { min-width: 0; cursor: pointer; }
+[data-role="codex-tern.toc.label"] { overflow-wrap: anywhere; }
+[data-role="codex-tern.toc.visits"] { flex-shrink: 0; color: var(--t3); font-size: 11px; font-weight: 400; cursor: pointer; padding: 0 2px; }
+[data-role="codex-tern.toc.footer"] { gap: 6px; }
+[data-role="codex-tern.toc.note"] { color: var(--t3); font-size: 12px; }
+[data-role="codex-tern.toc.get"] { align-self: flex-start; padding: 3px 9px; border-radius: 6px; background: var(--l2); cursor: pointer; font-size: 12px; }
+[data-role="codex-tern.toc.get"][data-mark="disabled"] { opacity: .5; cursor: default; }
+[data-role="codex-tern.toc.label"][data-mark="reveal"] { animation: ct-toc-reveal 240ms ease-out both; }
+@keyframes ct-toc-reveal {
+  from { clip-path: inset(0 100% 0 0); opacity: .65; }
+  to { clip-path: inset(0 0 0 0); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-role="codex-tern.toc.label"][data-mark="reveal"] { animation: none; }
+}

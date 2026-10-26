@@ -46,6 +46,22 @@ The same right-click menu has **Rename session**. Enter a name and press **Enter
 
 Sessions sort by last conversation activity, newest first. Sending a message or completing a task moves that session up, including background tasks. Opening an old session alone does not move it to the top. Refresh and pagination preserve this activity order.
 
+## Session TOC
+
+The **Session TOC** is a separate native card. It starts below **Sessions** and follows the selected conversation. Use its own drag handle and dividers to move or resize it anywhere in the layout. Closing either card leaves the other available. Reopen the outline with **Codex: Session TOC** in Tern's command palette.
+
+New sessions build a two-level outline automatically after accepted prompts and finished replies. Related follow-ups share a topic. Useful detours get their own entry. The outline can merge, split or rename entries as the discussion develops. Updated labels use a short, quiet wipe; reduced-motion settings disable it.
+
+Click a heading to jump to its opening prompt, including older history that has not loaded yet. **↩ N** cycles through later visits to the same topic. The chevron folds a topic's subheadings. Your draft and running task stay intact.
+
+Older sessions and forks start with an empty card and **Get TOC**. This reads the saved conversation and enables future updates for that session. **⋯ → Rebuild TOC** reads the history again and creates a fresh structure. A failed update keeps the last usable outline and offers **Retry**.
+
+A separate helper uses the session's model, with low reasoning effort when supported. It receives public prompts, finished replies, and the previous outline. Its instructions, summaries and results never enter the main conversation's context. It still uses model quota. Large histories require several bounded requests; rapid updates are combined. Images are represented as attachments, without sending their pixels to the helper.
+
+Outlines are stored locally under the application state directory, in `codex-tern/outlines/`, separately from conversation history and drafts. They survive switches and restarts. Opening an unchanged indexed conversation does not make another model call.
+
+This feature changes the controller as well as the interface. After updating and building, reload the Tern plugin and restart the client once after its tasks finish.
+
 ## Updating the client
 
 After `bun run build`, choose **Developer: Reload Window** in **More actions**, or press **Ctrl+Shift+R**. This loads the latest interface and styles in the same pane. Running tasks, pending questions and selected answers, queues, session drafts, attachments and editor undo stay intact. A failed load keeps the previous interface available. If a paste, send or session action is in progress, finish that action before reloading; running model turns do not block reload.

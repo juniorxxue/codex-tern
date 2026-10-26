@@ -107,7 +107,7 @@ try {
   await wait(() => text(panel).includes('Saved session'), 'current-folder history');
   assert.equal(tree('[data-role="codex-tern.sessions.new"]').length, 1);
   assert.equal(ctl('state').focused.id, client, 'opening the panel preserves composer focus');
-  assert.equal(ctl('state').panes.length, 2);
+  assert.equal(ctl('state').panes.length, 3);
   assert.ok(!text(panel).includes('EXCLUDED_OTHER_FOLDER'));
   assert.equal(tree('[data-role="codex-tern.sessions.time"]').length, 0);
   assert.equal(tree('[data-role="codex-tern.sessions.delete"]').length, 0, 'session rows have no trailing delete icon');
@@ -118,7 +118,7 @@ try {
   const shot = ctl('shot sessions-native-cards');
   const layout = JSON.parse(await readFile(resolve(out, shot.layout), 'utf8'));
   assert.ok(layout.htmlClass.includes('dense-islands'));
-  assert.equal(tree('section.tn-pane').length, 2);
+  assert.equal(tree('section.tn-pane').length, 3);
   assert.ok(tree(panel)[0].rect[0] < tree('[data-role="omp.editor"]')[0].rect[0]);
   assert.ok(tree(panel)[0].rect[2] >= 340 && tree(panel)[0].rect[2] <= 430,
     `default sidebar width: ${tree(panel)[0].rect[2]}`);
@@ -159,22 +159,22 @@ try {
   assert.ok(text('.ct-activity').includes('Working'));
   assert.equal(tree('[data-role="codex-tern.sessions.running"]').length, 1);
   assert.deepEqual(tree('[data-role="codex-tern.sessions.item"]').map(n => n.title), rowsBeforeReload);
-  assert.equal(ctl('state').panes.length, 2);
+  assert.equal(ctl('state').panes.length, 3);
   ctl('shot reloaded-from-sidebar');
   click('[data-role="omp.editor"] .sf-editor'); key('Meta+a'); key('Backspace');
   pass('Codex: Reload Window targets the client from its sidebar and preserves the running task, draft and session list');
   click('[data-role="omp.composer.stop"]');
   await wait(() => tree('[data-role="codex-tern.sessions.running"]').length === 0, 'sidebar observes completion after plugin reload');
   assert.equal(tree('[data-role="omp.composer.bar"] > .sf-place').length, 0, 'host title cannot overlap model controls');
-  assert.equal(ctl('state').panes.length, 2);
+  assert.equal(ctl('state').panes.length, 3);
   pass('plugin reload restores the existing sidebar and its activity polling without a sidebar command');
 
   ctl('plugins run plugin.codex-tern.sessions'); await pause(1000);
-  assert.equal(ctl('state').panes.length, 2);
+  assert.equal(ctl('state').panes.length, 3);
   pass('repeating the command reuses the existing panel');
   execFileSync(process.execPath, [resolve(root, 'dist/cli.mjs'), '--codex', resolve(root, 'test/fixtures/ui-app-server.mjs')],
     { env, cwd: root, encoding: 'utf8', timeout: 15000 });
-  assert.equal(ctl('state').panes.length, 2);
+  assert.equal(ctl('state').panes.length, 3);
   assert.equal(ctl('state').focused.id, client);
   pass('launching the project again focuses its existing client without creating another pane');
   await wait(() => text('[data-role="codex-tern.sessions.note"]').includes('Load more'), 'paged list');
@@ -312,7 +312,7 @@ try {
     '--resume', 'qa-thread-1', '--', external], { env, cwd: root, encoding: 'utf8', timeout: 15000 });
   await wait(() => text(selected).includes('QA session 1') && text('[data-role="omp.assistant"]').includes(external), 'external command reaches requested session');
   assert.equal(tree('[data-role="omp.user"]').filter(n => n.text?.includes(external)).length, 1);
-  assert.equal(ctl('state').panes.length, 2);
+  assert.equal(ctl('state').panes.length, 3);
   pass('an external command delivers its task once to the requested session in the existing project');
 
   key('Meta+a'); key('Backspace'); type('QA_DELAYED_REJECT'); key('Enter');
@@ -362,7 +362,7 @@ try {
   await wait(() => tree(selected).some(n => !beforeNew.includes(n.title)), 'sidebar creates and selects a new session');
   const createdTitle = tree(selected)[0].title;
   assert.equal(tree('[data-role="codex-tern.sessions.item"]').length, beforeNew.length + 1);
-  assert.equal(ctl('state').panes.length, 2, 'new session stays in the current project client');
+  assert.equal(ctl('state').panes.length, 3, 'new session stays in the current project client');
   assert.equal(ctl('state').focused.id, client);
   await wait(() => !text('.sf-ed-text').includes('draft preserved') && tree('[data-role="ct.working"]').length === 0,
     'new session composer is blank and idle');
@@ -463,7 +463,7 @@ try {
   await wait(() => tree(panel).length === 1 && text('.sf-dock').includes('QA Model')
     && text('.sf-ed-text').includes('Draft after closing the sidebar'), 'relaunch restores the last folder and its draft');
   assert.equal(tree(panel).length, 1);
-  assert.equal(ctl('state').panes.length, 2);
+  assert.equal(ctl('state').panes.length, 3);
   assert.equal(ctl('state').focused.id, client);
   assert.ok(text('[data-role="codex-tern.sessions.folder"]').includes('fixtures'));
   pass('relaunch restores the last folder and draft and reuses the sidebar in the same pane');
@@ -471,7 +471,7 @@ try {
   // Close just the client, leaving the native panel alive to verify stale actions.
   lua(`cx.layout:close(${client})`); ctl('carly close');
   await wait(() => text('.sf-main').includes('The Codex client is closed.'), 'closed owner');
-  assert.equal(ctl('state').panes.length, 1);
+  assert.equal(ctl('state').panes.length, 2);
   pass('closing the client leaves an inert panel with no stale switch actions');
 } catch (error) {
   try {

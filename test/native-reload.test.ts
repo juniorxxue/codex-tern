@@ -90,7 +90,7 @@ test('concurrent reloads coalesce and retain typing and events received during l
 test('broken imports, incompatible updates and render failures leave the old UI usable', async t => {
   class BrokenUI extends NativeUI { override render() { throw new Error('Broken renderer'); } }
   for (const load of [async () => { throw new Error('Missing build'); },
-    async () => ({ ...module, UI_API_VERSION: 2 }), async () => ({ ...module, NativeUI: BrokenUI })]) {
+    async () => ({ ...module, UI_API_VERSION: UI_API_VERSION + 1 }), async () => ({ ...module, NativeUI: BrokenUI })]) {
     const { host, c, render, closed } = await setup(load); t.after(() => host.close());
     host.current.draft.set('Keep me'); const old = host.current;
     const listeners = c.listenerCount('change');

@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { findExecutable } from './launch';
 import { runPluginCommand } from './tern-plugin';
 
-export type ReadingRequest = { token: string; lines: number; relative?: boolean };
+export type ReadingRequest = { token: string; lines: number; relative?: boolean; threadId?: string };
 type Anchor = { id: string; offset: number };
 type Position = { following: true } | { following: false; anchor: Anchor };
 type Element = { class?: string; rect: number[] };
@@ -103,14 +103,14 @@ export class ReadingPositions {
     else this.saved.delete(id);
   }
 
-  async restore(id?: string) {
+  async restore(id?: string, current: () => boolean = () => true) {
     const saved = id ? this.saved.get(id) : undefined;
-    if (!saved || this.disposed) return;
+    if (!saved || this.disposed || !current()) return;
     if (saved.following) {
       // Replacing a transcript normally follows the tail already. Avoid issuing
       // a window command (and its native animation) when no movement is needed.
       if (await this.inspect.following(this.role()) === false)
-        await this.exchange({ token: randomUUID(), lines: 0 });
+        if (current()) await this.exchange({ token: randomUUID(), lines: 0, threadId: id });
       return;
     }
     const anchor = saved.anchor;
@@ -120,13 +120,18 @@ export class ReadingPositions {
     // virtualized blocks and the composer can change height while we are away.
     for (let attempt = 0; attempt < 2; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 40));
-      if (this.disposed) return;
+      if (this.disposed || !current()) return;
       const offset = await this.inspect.offset(this.role(), anchor.id);
       if (offset === undefined) return;
       const lines = Math.round((anchor.offset - offset) / this.lineHeight());
       if (!lines) return;
-      await this.exchange({ token: randomUUID(), lines, relative: true });
+      if (current()) await this.exchange({ token: randomUUID(), lines, relative: true, threadId: id });
     }
+  }
+
+  async jump(threadId: string, nodeId: string, current: () => boolean = () => true) {
+    this.saved.set(threadId, { following: false, anchor: { id: nodeId, offset: 0 } });
+    await this.restore(threadId, current);
   }
 
   private async exchange(request: ReadingRequest): Promise<void> {

@@ -3,6 +3,7 @@
 local PREFIX = "codex-tern.sessions/v1:"
 local widths = require("./sidebar-width")
 local reading = require("./reading-position")
+local outline = require("./outline-panel")
 local panels = {}
 local timer = nil
 local width_timer = nil
@@ -130,6 +131,7 @@ local function paint(cx, pane, entry, snapshot)
 end
 
 local function remember(cx)
+  outline.remember(cx)
   for _, canvas in cx.canvas:list() do
     if canvas.owner == tern.plugin.id and string.sub(canvas.about or "", 1, #PREFIX) == PREFIX then
       local target = tonumber(string.sub(canvas.about, #PREFIX + 1))
@@ -189,14 +191,17 @@ local function poll(fast)
     fast_until = tern.now() + 2000
     if timer then timer:cancel(); timer = nil end
   end
-  if timer or next(panels) == nil then return end
-  local live = false
+  if timer or (next(panels) == nil and not outline.any()) then return end
+  local live = outline.live()
   for _, entry in panels do if entry.raw ~= "closed" then live = true; break end end
   if not live then return end
   -- Clicks need a prompt response; an idle panel can poll less often.
   timer = tern.timer(if tern.now() < fast_until then 50 else 700, function(cx)
     timer = nil
-    if cx then for pane, entry in panels do update(cx, pane, entry) end end
+    if cx then
+      for pane, entry in panels do update(cx, pane, entry) end
+      outline.update(cx, bridge)
+    end
     poll()
   end)
 end
@@ -230,6 +235,7 @@ local function open(cx, automatic_target)
   for pane, entry in panels do
     if entry.target == target and cx.session:pane(pane) then
       send(cx, target, "refresh"); update(cx, pane, entry)
+      if automatic_target then outline.open(cx, target, pane, state) end
       poll(true)
       return
     end
@@ -241,6 +247,7 @@ local function open(cx, automatic_target)
   cx.layout:move(pane, target, "left", {focus = false})
   panels[pane] = {target = target, raw = state.raw, view = view(state.snapshot), refreshed = tern.now(), locks_refreshed = tern.now()}
   widths.initialize(cx, pane, panels[pane], state.snapshot)
+  if automatic_target then outline.open(cx, target, pane, state) end
   watch_widths()
   send(cx, target, "refresh")
   poll(true)
@@ -260,6 +267,23 @@ tern.command({id = "sessions", title = "Codex: Sessions", icon = "history", run 
   if not requested then open(cx) end
 end})
 
+tern.command({id = "toc", title = "Codex: Session TOC", icon = "list", run = function(cx)
+  remember(cx)
+  local focused = cx.session:focused()
+  local target = outline.target(focused) or (if focused and panels[focused] then panels[focused].target else focused)
+  local tab = if focused then cx.session:tab_of(focused) else nil
+  if not target or not bridge(cx, target) then
+    target = nil
+    for _, pane in cx.session:panes() do
+      if pane.tab == tab and bridge(cx, pane.pane) then target = pane.pane; break end
+    end
+  end
+  if not target then cx:toast("info", "Open Codex × Tern in this tab first."); return end
+  local neighbour = nil
+  for pane, entry in panels do if entry.target == target then neighbour = pane; break end end
+  outline.open(cx, target, neighbour, bridge(cx, target)); poll(true)
+end})
+
 tern.command({id = "reading-position", title = "Codex: Reading position", available = function() return false end,
   run = function(cx)
     for _, pane in cx.session:panes() do
@@ -272,6 +296,7 @@ tern.command({id = "reading-position", title = "Codex: Reading position", availa
         reading.restore(cx, pane.pane, request, function(cx)
           local latest = bridge(cx, pane.pane)
           return latest and latest.snapshot.readingRequest and latest.snapshot.readingRequest.token == request.token
+            and (not request.threadId or latest.snapshot.current == request.threadId)
         end, done)
       end
     end
@@ -299,6 +324,7 @@ end})
 
 tern.on("canvas_action", function(ev, cx)
   remember(cx)
+  if outline.action(ev, cx, bridge, send) then poll(true); return true end
   local entry = panels[ev.pane]
   if not entry then return true end
   if ev.act == "resume" and ev.value then
@@ -386,6 +412,7 @@ tern.on("canvas_action", function(ev, cx)
 end)
 
 tern.on("pane_closed", function(ev, cx)
+  outline.closed(ev.pane)
   local entry = panels[ev.pane]
   if entry then send(cx, entry.target, "hide"); panels[ev.pane] = nil end
 end)
@@ -395,6 +422,7 @@ local function restore(cx)
   widths.sync(cx, panels)
   watch_widths()
   for pane, entry in panels do update(cx, pane, entry) end
+  outline.update(cx, bridge)
   poll()
 end
 

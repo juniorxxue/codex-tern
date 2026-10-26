@@ -12,7 +12,7 @@ export async function runPluginCommand(command: 'setup' | 'sessions' | 'reload' 
     const plugin = fileURLToPath(new URL('../tern-plugin/', import.meta.url));
     const result = await exec(tern, ['plugin', 'link', plugin], { timeout: 15_000 });
     if (result.stdout.trim()) console.log(result.stdout.trim());
-    console.log('Installed the Tern commands: Codex: Sessions and Codex: Reload Window');
+    console.log('Installed the Tern commands: Codex: Sessions, Codex: Session TOC and Codex: Reload Window');
   } else {
     try {
       const result = await exec(tern, ['ctl', `plugins run plugin.codex-tern.${command}`], { timeout: 15_000 });

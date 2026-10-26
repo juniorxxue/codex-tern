@@ -74,7 +74,7 @@ try {
   await wait(() => tree(row('Saved session 1')).length === 1 && text('.sf-dock').includes('QA Model'), 'ready client and sidebar');
   const prompt = 'hold 请在后台为这个会话生成简短标题，同时保留我正在输入的草稿，切换会话也不要影响任务';
   click(editor); type(prompt); key('Enter');
-  await wait(() => tree(row(prompt)).length === 1 && events().some(e => e.ephemeral), 'prompt preview and background generation');
+  await wait(() => tree(row(prompt)).length === 1 && events().some(e => e.ephemeral && e.source === 'thread_title'), 'prompt preview and background generation');
   const original = threads().find(t => t.preview === prompt).id;
   assert.equal(tree('[data-role="omp.composer.stop"]').length, 1);
   const sourceDraft = '这段草稿需要保留，光标和输入不能被打断';
@@ -102,7 +102,7 @@ try {
   assert.ok(!text('.sf-main').includes('Give this message a concise title'));
   assert.ok(!threads().some(t => t.ephemeral || t.id.startsWith('qa-title-')));
   const mainPid = events().find(e => e.method === 'thread/name/set')?.pid;
-  const backgroundPid = events().find(e => e.ephemeral)?.pid;
+  const backgroundPid = events().find(e => e.ephemeral && e.source === 'thread_title')?.pid;
   assert.ok(mainPid && backgroundPid && mainPid !== backgroundPid);
   assert.equal(threads().find(t => t.id === original).name, generated);
   await pause(800); ctl('shot title-finished');
@@ -113,7 +113,7 @@ try {
   await wait(() => tree('[data-role="omp.composer.stop"]').length === 0, 'new session');
   const second = 'hold 手动命名优先';
   click(editor); type(second); key('Enter');
-  await wait(() => tree(row(second)).length === 1 && events().filter(e => e.ephemeral).length === 2, 'second title job');
+  await wait(() => tree(row(second)).length === 1 && events().filter(e => e.ephemeral && e.source === 'thread_title').length === 2, 'second title job');
   click(`${row(second)} right`);
   await wait(() => text('[role="menu"]').includes('Rename session'), 'rename menu');
   click('[role="menu"] [role="menuitem"]:first-child');
@@ -138,14 +138,14 @@ try {
   const inherited = 'Fork of Saved session 1';
   await wait(() => tree(selected)[0]?.title === inherited, 'fork keeps its initial title');
   const forkId = threads().find(t => t.forkedFromId === 'saved-1').id;
-  assert.equal(events().filter(e => e.ephemeral).length, 2, 'forking alone never starts naming');
+  assert.equal(events().filter(e => e.ephemeral && e.source === 'thread_title').length, 2, 'forking alone never starts naming');
   key('Control+q');
   await wait(() => text('.sf-main').includes('The Codex client is closed.'), 'exit before first fork prompt');
   ctl('ready'); ctl(`run ${JSON.stringify(command)}`);
   await wait(() => tree(selected)[0]?.title === inherited && tree('[data-role="ct.fork.origin"]').length === 1, 'uncontinued fork restored');
   await unlink(release);
   click(editor); type('hold Explore the first new fork prompt'); key('Enter');
-  await wait(() => events().filter(e => e.ephemeral).length === 3 && threads().find(t => t.id === forkId).turns.length === 2, 'fork prompt starts naming');
+  await wait(() => events().filter(e => e.ephemeral && e.source === 'thread_title').length === 3 && threads().find(t => t.id === forkId).turns.length === 2, 'fork prompt starts naming');
   assert.equal(tree(selected)[0]?.title, inherited, 'initial title remains during generation');
   await writeFile(release, 'fork title ready');
   await wait(() => tree(selected)[0]?.title === generated && threads().find(t => t.id === forkId).name === generated, 'fork title saved and displayed');

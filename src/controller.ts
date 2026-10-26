@@ -10,6 +10,9 @@ import type { ReasoningEffort } from './generated/ReasoningEffort';
 import type { Turn } from './generated/v2/Turn';
 import { RecoveryStore, type SavedDraft } from './recovery';
 import { SessionTitles } from './session-titles';
+import { AuxiliaryAgent } from './auxiliary-agent';
+import { SessionOutlines } from './session-outlines';
+import { outlineTurns } from './session-outline';
 import { Preferences } from './preferences';
 export type { DisplayItem, PendingRequest, QueuedInput, Notice } from './conversation';
 export interface Completion { threadId: string; turnId: string; title: string; status: 'completed' | 'failed' }
@@ -27,6 +30,8 @@ export class Controller extends EventEmitter {
   private reconnecting?: Promise<void>;
   private readonly unread = new Map<string, Completion>();
   private readonly titles: SessionTitles;
+  private readonly auxiliary: AuxiliaryAgent;
+  private outlines?: SessionOutlines;
   private readonly titleJobs = new Map<string, { abort: AbortController; name?: string }>();
   private readonly titleChanges = new Map<string, { name: string; revision: string }>();
   private readonly nameWrites = new Map<string, Promise<void>>();
@@ -34,7 +39,8 @@ export class Controller extends EventEmitter {
 
   constructor(readonly rpc: CodexRpc, cwd: string, readonly preferences = new Preferences()) {
     super();
-    this.titles = new SessionTitles(() => rpc.createPeer());
+    this.auxiliary = new AuxiliaryAgent(() => rpc.createPeer());
+    this.titles = new SessionTitles(this.auxiliary);
     this.selected = this.create(cwd);
     rpc.on('notification', (message: RpcMessage) => {
       if (message.method === 'turn/completed') this.sessionsVersion++;
@@ -60,13 +66,14 @@ export class Controller extends EventEmitter {
     });
     rpc.on('disconnected', (text: string) => {
       this.cancelTitles();
+      this.outlines?.cancelAll();
       for (const conversation of this.all()) {
         conversation.connection = 'disconnected'; conversation.activeTurn = null;
         conversation.hydrated = false;
         conversation.requests = []; conversation.queuePaused = true; conversation.notice(text, true);
       }
     });
-    rpc.on('closing', () => this.cancelTitles());
+    rpc.on('closing', () => { this.cancelTitles(); this.outlines?.cancelAll(); });
   }
 
   private all() { return new Set([this.selected, ...this.conversations.values()]); }
@@ -107,6 +114,8 @@ export class Controller extends EventEmitter {
         return replacement;
       }
       next.hydrated = true;
+      await this.outlines?.load(id);
+      void this.outlines?.resume(id, this.auxiliaryModel(next), outlineTurns(next.items, next.turns));
     }
     return next;
   }
@@ -121,6 +130,7 @@ export class Controller extends EventEmitter {
     // A notification may already have registered this id while the RPC was pending.
     const next = this.conversation(result.thread.id);
     next.adopt(result); next.hydrated = true;
+    await this.outlines?.enableNew(result.thread.id);
     return next;
   }
   private create(cwd: string) {
@@ -133,6 +143,10 @@ export class Controller extends EventEmitter {
     let previous = '';
     conversation.on('activity', () => { this.sessionsVersion++; });
     conversation.on('firstInput', (text: string, previousName: string | null) => { void this.generateTitle(conversation, text, previousName); });
+    conversation.on('outlineChanged', () => {
+      if (conversation.thread && this.connection === 'ready' && !this.isArchived(conversation.thread.id))
+        void this.outlines?.update(conversation.thread.id, this.auxiliaryModel(conversation), outlineTurns(conversation.items, conversation.turns));
+    });
     conversation.on('completed', (turn: Turn) => {
       if (!conversation.thread || !['completed', 'failed'].includes(turn.status)) return;
       // A queue is one stretch of work. Report success when its last turn ends.
@@ -241,6 +255,23 @@ export class Controller extends EventEmitter {
   markRead(id: string) { if (this.unread.delete(id)) this.changed(); }
   setNotifications(enabled: boolean) { this.notifications = enabled; this.recovery?.setNotifications(enabled); this.changed(); }
   get newSessionModel() { return this.preferences.model; }
+  useOutlines(directory?: string) { this.outlines = new SessionOutlines(this.auxiliary, this.rpc, () => this.changed(), directory); }
+  get outline() { return this.outlines?.snapshot(this.thread?.id); }
+  private auxiliaryModel(conversation: Conversation) {
+    const model = conversation.modelOverride ?? conversation.effective?.model;
+    const info = conversation.models.find(m => m.model === model || m.id === model);
+    return { cwd: conversation.cwd, model, modelProvider: conversation.effective?.modelProvider,
+      effort: info?.supportedReasoningEfforts.some(e => e.reasoningEffort === 'low') ? 'low' as const : undefined };
+  }
+  async generateOutline(id: string, rebuild = false) {
+    if (!this.outlines || !this.sessionReady || this.thread?.id !== id || this.selecting || this.isArchived(id)) return;
+    await this.outlines.generate(id, this.auxiliaryModel(this.selected), outlineTurns(this.items, this.turns), rebuild);
+  }
+  outlineTarget(id: string, revision: string, node: string, visit: number) {
+    if (this.thread?.id !== id || this.isArchived(id)) return;
+    return this.outlines?.target(id, revision, node, visit);
+  }
+  async flushOutlines() { await this.outlines?.flush(); }
   async refreshPreferences() { await this.preferences.load(); this.changed(); }
   async setNewSessionModel(model?: string) {
     if (model && !this.models.some(m => m.model === model && !m.hidden)) throw new Error('Choose an available model.');
@@ -385,7 +416,7 @@ export class Controller extends EventEmitter {
       next.pendingForkTitle = { name: result.thread.name?.trim() || null, turnId };
       next.modelOverride = model; next.effortOverride = effort ?? undefined;
       this.saveConversation(next);
-      try { await next.loadHistory(); next.hydrated = true; }
+      try { await next.loadHistory(); next.hydrated = true; await this.outlines?.load(result.thread.id); }
       finally {
         // Creation already succeeded. Keep the fork accessible even if reading
         // its history fails; Retry can reopen it without creating another fork.
@@ -476,6 +507,7 @@ export class Controller extends EventEmitter {
       const next = current ? await (replacement ? this.prepareSession(replacement) : this.prepareNew(this.cwd)) : undefined;
       await this.rpc.request('thread/archive', { threadId: id });
       this.archived.add(id);
+      await this.outlines?.remove(id).catch(() => {});
       this.recovery?.remove(id); this.unread.delete(id);
       this.titleChanges.delete(id);
       this.conversations.delete(id);

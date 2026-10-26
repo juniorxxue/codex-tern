@@ -61,13 +61,16 @@ async function openWindow(name, width) {
   };
   w.panel = () => {
     const output = w.lua(`
+      local function contains(node, pane)
+        return node and (node.pane == pane or contains(node[1], pane) or contains(node[2], pane))
+      end
       local function find(node, pane)
         if not node or node.pane then return nil end
-        if node.split == "right" and node[1] and node[1].pane == pane then return node.ratio end
+        if node.split == "right" and contains(node[1], pane) then return node.ratio end
         return find(node[1], pane) or find(node[2], pane)
       end
       for _, canvas in cx.canvas:list() do
-        if canvas.owner == "codex-tern" then
+        if canvas.owner == "codex-tern" and string.sub(canvas.about, 1, #"codex-tern.sessions/v1:") == "codex-tern.sessions/v1:" then
           local layout = cx.session:layout(cx.session:tab_of(canvas.pane))
           print(tern.json.encode({pane = canvas.pane, ratio = find(layout.root, canvas.pane)}))
         end

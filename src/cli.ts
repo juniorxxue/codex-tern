@@ -1,5 +1,6 @@
 import { stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { dirname, basename, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { HELP, VERSION, nativeArgs, parseOptions } from './options';
 import { findExecutable, openTern, focusClient } from './launch';
@@ -39,7 +40,7 @@ async function main() {
     shuttingDown = true; c.connection = 'disconnected';
     // Keep the project lease until the final journal is saved. A new client
     // must not read an older snapshot while this backend is still closing.
-    try { await rpc.close(); await c.flushRecovery(); }
+    try { await rpc.close(); await c.flushRecovery(); await c.flushOutlines(); }
     finally { await instance?.close(); }
   };
   try {
@@ -78,6 +79,8 @@ async function main() {
       if (!instance) { await ui.close(); return; }
       try { c.useRecovery(await RecoveryStore.open(recoveryPath(address))); }
       catch (error) { c.notice((error as Error).message, true); }
+      const recoveryFile = recoveryPath(address);
+      c.useOutlines(join(dirname(dirname(recoveryFile)), 'outlines', basename(recoveryFile, '.json')));
     }
     // Never await backend work in the UI input loop: approvals and cancellation stay live.
     const connection = c.connect(options.resume, options.prompt !== undefined).then(async () => {

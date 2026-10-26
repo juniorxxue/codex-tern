@@ -82,7 +82,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   const m = JSON.parse(line);
   if (process.env.QA_RPC_LOG) appendFileSync(process.env.QA_RPC_LOG,
     JSON.stringify({ pid: process.pid, method: m.method ?? 'response', threadId: m.params?.threadId,
-      ephemeral: m.params?.ephemeral, name: m.params?.name }) + '\n');
+      ephemeral: m.params?.ephemeral, source: m.params?.threadSource, cursor: m.params?.cursor, name: m.params?.name }) + '\n');
   const reply = result => send({ id: m.id, result });
   if (!m.method) {
     const context = pending.get(m.id);
@@ -102,8 +102,8 @@ createInterface({ input: process.stdin }).on('line', line => {
     case 'model/list': reply({ data: [model('qa-model'), model('other-model')], nextCursor: null }); break;
     case 'config/read': reply({ config: {}, origins: {}, layers: null }); break;
     case 'thread/start': {
-      if (m.params.ephemeral && !process.env.QA_GENERATED_TITLE) {
-        send({ id: m.id, error: { code: -32000, message: 'Title generation is not enabled in this fixture' } }); break;
+      if (m.params.ephemeral && !(m.params.threadSource === 'thread_outline' ? process.env.QA_TOC_FIXTURE : process.env.QA_GENERATED_TITLE)) {
+        send({ id: m.id, error: { code: -32000, message: 'This background task is not enabled in the fixture' } }); break;
       }
       if (m.params.ephemeral) backgroundOnly = true;
       const empty = m.params.cwd === process.env.QA_EMPTY_SESSION_CWD;
@@ -111,6 +111,7 @@ createInterface({ input: process.stdin }).on('line', line => {
         cwd: m.params.cwd, model: m.params.model ?? 'qa-model', preview: empty ? '' : 'QA session', name: empty ? null : `QA session ${seq}`,
         createdAt: Date.now() / 1000, updatedAt: Date.now() / 1000, recencyAt: Date.now() / 1000, turns: [] };
       context.current = current; contexts.set(current.id, context);
+      context.source = m.params.threadSource;
       if (!backgroundOnly) acquire(current.id);
       threads.set(current.id, current); persist(); reply(settings(current));
       notify('thread/started', { thread: { ...current, turns: [] } });
@@ -173,7 +174,12 @@ createInterface({ input: process.stdin }).on('line', line => {
         setTimeout(() => reply(settings(current)), 750);
       else reply(settings(current));
       break;
-    case 'thread/turns/list': reply({ data: [...current.turns].reverse(), nextCursor: null }); break;
+    case 'thread/turns/list': {
+      const sorted = [...current.turns].reverse();
+      const start = process.env.QA_TOC_FIXTURE ? Number(m.params.cursor ?? 0) : 0;
+      const limit = process.env.QA_TOC_FIXTURE ? m.params.limit ?? 15 : sorted.length;
+      reply({ data: sorted.slice(start, start + limit), nextCursor: start + limit < sorted.length ? String(start + limit) : null }); break;
+    }
     case 'thread/read': reply({ thread: threads.get(m.params.threadId) }); break;
     case 'thread/unsubscribe': reply({}); notify('thread/closed', { threadId: m.params.threadId }); break;
     case 'turn/start': {
@@ -198,6 +204,28 @@ createInterface({ input: process.stdin }).on('line', line => {
       event('turn/started', { turn });
       add({ id: `user-${turn.id}`, type: 'userMessage', content: m.params.input });
       if (current.ephemeral) {
+        if (context.source === 'thread_outline') {
+          const input = JSON.parse(text), topics = structuredClone(input.previousOutline.topics);
+          for (const message of input.evidence) {
+            const build = message.text.includes('BUILD');
+            if (message.role === 'assistant') {
+              const root = topics.find(t => t.id === 'rules');
+              if (root && message.text.includes('REPAIR')) root.title = 'Substitution and its repair';
+              continue;
+            }
+            const id = build ? 'build' : 'rules';
+            let root = topics.find(t => t.id === id);
+            if (!root) { root = { id, title: build ? 'Build failure' : 'Substitution rule', summary: 'Fixture topic', anchors: [message.anchor], children: [] }; topics.push(root); }
+            if (message.text.includes('RETURN') && !root.anchors.includes(message.anchor)) root.anchors.push(message.anchor);
+            const label = message.text.includes('COUNTEREXAMPLE') ? 'Counterexample' : message.text.includes('SUGGEST') ? 'Proposed repair' : '';
+            if (label && !root.children.some(c => c.title === label)) root.children.push({ id: label === 'Counterexample' ? 'counter' : 'repair', title: label, summary: 'Fixture subtopic', anchors: [message.anchor] });
+          }
+          const done = () => finish(JSON.stringify({ topics }));
+          if (process.env.QA_TOC_RELEASE_FILE) {
+            const interval = setInterval(() => { if (existsSync(process.env.QA_TOC_RELEASE_FILE)) { clearInterval(interval); done(); } }, 25);
+          } else setTimeout(done, 100);
+          break;
+        }
         const done = () => finish(JSON.stringify({ title: process.env.QA_GENERATED_TITLE ?? '自动命名会话' }));
         if (process.env.QA_TITLE_RELEASE_FILE) {
           const interval = setInterval(() => {

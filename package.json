@@ -23,6 +23,7 @@
     "test:reading-position": "bun scripts/reading-position-qa.mjs",
     "test:session-actions": "bun scripts/session-actions-qa.mjs",
     "test:session-titles": "bun scripts/session-titles-qa.mjs",
+    "test:toc": "bun scripts/toc-qa.mjs",
     "test:settings": "bun scripts/settings-qa.mjs",
     "test:sidebar-width": "bun scripts/sidebar-width-qa.mjs",
     "check": "bun --bun tsc --noEmit",

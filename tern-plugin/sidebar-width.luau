@@ -8,9 +8,12 @@ local function preference()
   return true, if type(value) == "number" and value > 0 and value < 1 then value else nil
 end
 
+local function contains(node, pane)
+  return node and (node.pane == pane or contains(node[1], pane) or contains(node[2], pane))
+end
 local function pane_split(node, pane)
   if not node or node.pane then return nil end
-  if node.split == "right" and node[1] and node[1].pane == pane then return node end
+  if node.split == "right" and contains(node[1], pane) then return node end
   return pane_split(node[1], pane) or pane_split(node[2], pane)
 end
 

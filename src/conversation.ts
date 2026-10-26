@@ -375,6 +375,7 @@ export class Conversation extends EventEmitter {
       this.requests = this.requests.filter(r => r.id !== p.requestId); this.changed(); return;
     }
     if (p?.threadId && p.threadId !== this.thread?.id) return;
+    let outlineChanged = false;
     switch (method) {
       case 'turn/started':
         if (!this.endedTurns.has(p.turn.id)) { this.activeTurn = p.turn.id; this.turns.set(p.turn.id, p.turn); }
@@ -391,12 +392,16 @@ export class Conversation extends EventEmitter {
         if (p.turn.error) this.notice(p.turn.error.message, true);
         if (p.turn.status !== 'completed') this.queuePaused = true;
         if (firstCompletion) this.completion = p.turn;
+        outlineChanged = firstCompletion;
         if (this.queue.length && !this.queuePaused)
           setTimeout(() => void this.act(() => this.runQueue()), 0);
         break;
       }
-      case 'item/started': this.upsert(p.turnId, p.item, false); break;
-      case 'item/completed': this.upsert(p.turnId, p.item, true); break;
+      case 'item/started':
+      case 'item/completed':
+        this.upsert(p.turnId, p.item, method === 'item/completed');
+        outlineChanged = p.item.type === 'userMessage';
+        break;
       case 'item/agentMessage/delta':
       case 'item/plan/delta': {
         let entry = this.items.find(i => i.id === `${p.turnId}:${p.itemId}`);
@@ -448,5 +453,6 @@ export class Conversation extends EventEmitter {
         this.diagnostics = this.diagnostics.slice(-30);
     }
     this.changed();
+    if (outlineChanged) this.emit('outlineChanged');
   }
 }

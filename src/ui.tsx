@@ -53,7 +53,7 @@ const styles = css`
 `;
 
 // Increment when the retained runtime or reload state needs an incompatible change.
-export const UI_API_VERSION = 1;
+export const UI_API_VERSION = 2;
 export type NativeUIState = ReturnType<NativeUI['reloadState']>;
 
 export class NativeUI {
@@ -100,6 +100,9 @@ export class NativeUI {
   private readingPositions = new ReadingPositions(() => this.render(),
     () => `ct.transcript.${this.clientInstance}`, id => this.surface.reveal(id, 'start'), () => this.session.caps.cell.h);
   private sidebarNavigation?: { request: string; target: string; pending: boolean };
+  private tocJump = 0;
+  private tocLocation?: { threadId: string; nodeId: string; visit: number };
+  private tocError?: { threadId: string; message: string };
   openProject?: (cwd: string, resume?: string) => Promise<boolean>;
   private readonly projectDirectory: string;
   private composerThread?: string;
@@ -132,6 +135,39 @@ export class NativeUI {
     this.surface.stylesheet('codex-tern-appearance', appearanceStyles);
   }
 
+  private async jumpOutline(value?: string) {
+    if (!value || this.c.selecting || this.navigating) return;
+    let request: { threadId: string; revision: string; nodeId: string; visit: number };
+    try {
+      request = JSON.parse(value);
+      if (!request || typeof request.threadId !== 'string' || typeof request.revision !== 'string'
+        || typeof request.nodeId !== 'string' || !Number.isInteger(request.visit)) return;
+    } catch { return; }
+    const { threadId, revision, nodeId, visit } = request;
+    const target = this.c.outlineTarget(threadId, revision, nodeId, visit);
+    if (!target || this.c.thread?.id !== threadId) return;
+    const token = ++this.tocJump;
+    const current = () => !this.ended && this.tocJump === token && this.c.thread?.id === threadId;
+    this.tocError = undefined;
+    try {
+      while (current() && !this.c.items.some(i => i.id === target) && this.c.historyCursor) {
+        const before = this.c.historyCursor;
+        await this.c.loadHistory();
+        if (this.c.historyCursor === before) throw new Error('History did not advance');
+      }
+      if (!current()) return;
+      const entry = this.c.items.find(i => i.id === target && i.item.type === 'userMessage');
+      if (!entry) throw new Error('Prompt unavailable');
+      // Steering cards use client IDs to retain their identity after server acknowledgement.
+      const key = entry.item.type === 'userMessage' && entry.item.clientId
+        ? `${entry.turnId}:client:${entry.item.clientId}` : entry.id;
+      this.tocLocation = { threadId, nodeId, visit }; this.render();
+      await this.readingPositions.jump(threadId, `main.${key}`, current);
+    } catch {
+      if (current()) { this.tocError = { threadId, message: 'Could not locate this prompt. Rebuild TOC or try again.' }; this.render(); }
+    }
+  }
+
   assertReloadable() {
     if (this.ended) throw new Error('This window is closed.');
     if (this.pasting || this.pendingActions || this.c.operation || this.c.selecting || this.navigating
@@ -149,7 +185,7 @@ export class NativeUI {
       focused: this.focused, visible: this.visible, sendMode: this.sendMode,
       activityModes: this.activityModes, proposalSelections: this.proposalSelections, proposalDrafts: this.proposalDrafts,
       previews: this.previews, failedPreviews: this.failedPreviews, folder: this.folderSessions.reloadState(),
-      reading: this.readingPositions.saved };
+      reading: this.readingPositions.saved, tocLocation: this.tocLocation, tocError: this.tocError };
   }
 
   private requestReload() {
@@ -702,12 +738,18 @@ export class NativeUI {
         <text key="sessions" hidden title={JSON.stringify({ ...this.folderSessions.snapshot, cols: this.session.caps.cols,
           sidebarRequest: this.sidebarRequested ? this.clientInstance : undefined,
           readingRequest: this.readingPositions.request,
+          tocProtocol: 1, toc: c.outline && { ...c.outline,
+            error: this.tocError && this.tocError.threadId === c.thread?.id ? this.tocError.message : c.outline.error,
+            location: this.tocLocation?.threadId === c.thread?.id ? this.tocLocation : undefined },
           cellWidth: this.session.caps.cell.w,
           rows: this.folderSessions.snapshot.rows.map(row => ({ ...row, canArchive: row.canArchive && !this.hasSessionDraft(row.id) })),
           archiveProtocol: 1, renameProtocol: 1, navigationProtocol: 1, newSessionProtocol: 1,
           reloadProtocol: this.reloadWindow ? 1 : undefined, uiGeneration: this.generation, navigation: this.sidebarNavigation })}
           onAction={{ refresh: () => { void this.folderSessions.refresh(); },
             'reading-position': e => this.readingPositions.reply(e.value),
+            'toc-get': e => { if (e.value) { this.tocError = undefined; void c.generateOutline(e.value); } },
+            'toc-rebuild': e => { if (e.value) { this.tocError = undefined; void c.generateOutline(e.value, true); } },
+            'toc-jump': e => { void this.jumpOutline(e.value); },
             reload: () => this.requestReload(),
             locks: () => { void this.folderSessions.refreshLocks(); },
             more: () => { void this.folderSessions.refresh(true); },
