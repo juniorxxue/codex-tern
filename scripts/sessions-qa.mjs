@@ -143,7 +143,7 @@ try {
   // No sidebar click or command after reload: either would restart polling and
   // conceal the lost timer. Activity in the existing client must update it.
   click('[data-role="omp.editor"] .sf-editor'); type('hold'); key('Enter');
-  await wait(() => text('.ct-activity').includes('Working'), 'task after plugin reload');
+  await wait(() => text('.ct-activity').includes('Activity'), 'task after plugin reload');
   await wait(() => tree('[data-role="codex-tern.sessions.running"]').length === 1, 'sidebar polling restored after plugin reload');
   type('Reload keeps this draft');
   const wireGeneration = async () => Number([...(await readFile(resolve(out, 'client-wire.jsonl'), 'utf8'))
@@ -156,7 +156,7 @@ try {
   while (await wireGeneration() === beforeReload && Date.now() < untilReload) await pause(100);
   assert.equal(await wireGeneration(), beforeReload + 1);
   assert.ok(text('.sf-ed-text').includes('Reload keeps this draft'));
-  assert.ok(text('.ct-activity').includes('Working'));
+  assert.ok(text('.ct-activity').includes('Activity'));
   assert.equal(tree('[data-role="codex-tern.sessions.running"]').length, 1);
   assert.deepEqual(tree('[data-role="codex-tern.sessions.item"]').map(n => n.title), rowsBeforeReload);
   assert.equal(ctl('state').panes.length, 3);
@@ -221,11 +221,11 @@ try {
   pass('opening history and metadata refresh preserve activity order');
 
   key('Meta+a'); key('Backspace'); type('hold'); key('Enter');
-  await wait(() => text('.ct-activity').includes('Working'), 'active task');
+  await wait(() => text('.ct-activity').includes('Activity'), 'active task');
   click(row('QA session 1'));
   await wait(() => text(selected).includes('QA session 1'), 'switch while first task runs');
   key('Meta+a'); key('Backspace'); type('hold'); key('Enter');
-  await wait(() => text('.ct-activity').includes('Working'), 'second active task');
+  await wait(() => text('.ct-activity').includes('Activity'), 'second active task');
   await wait(() => tree('[data-role="codex-tern.sessions.running"]').length === 2, 'two running session indicators');
   await wait(() => tree('[data-role="codex-tern.sessions.item"]')[1]?.title === 'Saved session 7', 'active sessions rise by last activity');
   const activityOrder = tree('[data-role="codex-tern.sessions.item"]').map(n => n.title);
@@ -257,9 +257,9 @@ try {
       await waitFast(() => tree(selected).some(n => n.title === 'QA session 1'), 'failed selection returns to original session');
     }
   }
-  await wait(() => tree('[data-role="ct.working"]').length === 0 && text('.ct-activity').includes('Working'), 'latest session finishes opening');
+  await wait(() => tree('[data-role="ct.working"]').length === 0 && text('.ct-activity').includes('Activity'), 'latest session finishes opening');
   assert.equal(tree(selected)[0].title, 'Saved session 7');
-  await wait(() => text('.ct-activity').includes('Working'), 'latest session transcript ready');
+  await wait(() => text('.ct-activity').includes('Activity'), 'latest session transcript ready');
   assert.equal(tree('[data-role="codex-tern.sessions.running"]').length, 2);
   assert.deepEqual(tree('[data-role="codex-tern.sessions.item"]').map(n => n.title), activityOrder);
   await writeFile(resolve(out, 'selection-feedback.json'), JSON.stringify({ delayedResumeMs: 750, feedback }, null, 2));
@@ -268,12 +268,12 @@ try {
   pass('pending destinations respond immediately; active selection stays with the loaded session through failures and rapid clicks');
   click(row('Saved session 7'));
   await wait(() => text(selected).includes('Saved session 7'), 'return to first running task');
-  assert.ok(text('.ct-activity').includes('Working'));
+  assert.ok(text('.ct-activity').includes('Activity'));
   click('[data-role="omp.composer.stop"]');
   await wait(() => text('.ct-activity').includes('Stopped'), 'stopped task');
   click(row('QA session 1'));
-  await wait(() => text(selected).includes('QA session 1') && text('.ct-activity').includes('Working'), 'return to second task');
-  assert.ok(text('.ct-activity').includes('Working'), 'stopping the first task preserves the second');
+  await wait(() => text(selected).includes('QA session 1') && text('.ct-activity').includes('Activity'), 'return to second task');
+  assert.ok(text('.ct-activity').includes('Activity'), 'stopping the first task preserves the second');
   click('[data-role="omp.composer.stop"]');
   await wait(() => text('.ct-activity').includes('Stopped'), 'second task stopped');
   key('Meta+a'); key('Backspace');
@@ -294,9 +294,9 @@ try {
   click(row('Saved session 7'));
   await wait(() => text(selected).includes('Saved session 7'), 'leave background task');
   type('hold'); key('Enter');
-  await wait(() => text('.ct-activity').includes('Working'), 'foreground task starts');
+  await wait(() => text('.ct-activity').includes('Activity'), 'foreground task starts');
   await wait(() => tree(`${row('QA session 1')} [data-role="codex-tern.sessions.running"]`).length === 0, 'background completion');
-  assert.ok(text('.ct-activity').includes('Working'));
+  assert.ok(text('.ct-activity').includes('Activity'));
   await wait(() => tree('[data-role="codex-tern.sessions.item"]')[0]?.title === 'QA session 1', 'newest background activity moves to the top');
   assert.ok(text(selected).includes('Saved session 7'), 'activity sorting does not change the selected session');
   await wait(() => text('[data-role="ct.completion"]').includes('Task complete')
@@ -307,7 +307,7 @@ try {
   await wait(() => tree(`${row('QA session 1')} [data-role="codex-tern.sessions.completed"]`).length === 0, 'opening the result clears its marker');
   click(row('Saved session 7'));
   await wait(() => text(selected).includes('Saved session 7'), 'return to foreground task');
-  await wait(() => text('.ct-activity').includes('Working'), 'foreground transcript finishes rendering');
+  await wait(() => text('.ct-activity').includes('Activity'), 'foreground transcript finishes rendering');
   click('[data-role="omp.composer.stop"]');
   await wait(() => text('.ct-activity').includes('Stopped'), 'foreground stopped');
   pass('background completion moves the session first by activity while the selected session keeps working');
@@ -353,7 +353,7 @@ try {
   pass('pending questions and partial answer drafts stay with their own session while switching');
 
   type('hold'); key('Enter');
-  await wait(() => text('.ct-activity').includes('Working'), 'task before new session');
+  await wait(() => text('.ct-activity').includes('Activity'), 'task before new session');
   type('draft preserved before creating a session');
   key('Shift+Enter'); type('Second line of the draft');
   key('Shift+Enter'); type('Third line of the draft');
@@ -377,7 +377,7 @@ try {
   type('draft in new session');
   click(row('QA session 1'));
   await wait(() => text('.sf-ed-text').includes('draft preserved before creating a session')
-    && text('.ct-activity').includes('Working'), 'original draft and active task after new session');
+    && text('.ct-activity').includes('Activity'), 'original draft and active task after new session');
   click('[data-role="omp.composer.stop"]');
   await wait(() => text('.ct-activity').includes('Stopped'), 'original task stopped');
   click(row(createdTitle));

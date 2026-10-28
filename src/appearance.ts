@@ -114,7 +114,6 @@ export const appearanceStyles = css`
   .sf.sf-col[data-role="omp.assistant"],
   .sf.sf-card[data-role="omp.welcome"],
   .sf.sf-col[data-role="omp.welcome"],
-  .sf.sf-row[data-role="ct.pending"],
   .sf.sf-row[data-role="ct.fork.origin"],
   .sf.sf-el.ct-activity {
     width: 100%;
@@ -265,6 +264,7 @@ export const appearanceStyles = css`
     letter-spacing: 0;
   }
   .sf.sf-col[data-role="omp.editor"],
+  .sf.sf-row[data-role="omp.working"],
   .sf.sf-section[data-role="omp.queue"],
   .sf.sf-el.ct-request {
     width: 100%;
@@ -423,13 +423,11 @@ export const appearanceStyles = css`
   .sf.sf-row[data-role="ct.nav"] .sf-icon,
   .sf.sf-row[data-role="ct.nav"] .ico { width: 12px; height: 12px; }
   .sf.sf-row[data-role="ct.working"] { flex-shrink: 0; font-size: 11px; }
-  .sf.sf-row[data-role="ct.pending"],
   .sf.sf-el.ct-activity {
     font-family: var(--ct-prose);
     font-size: 12px;
     line-height: 20px;
   }
-  .sf.sf-row[data-role="ct.pending"] { padding: 8px 2px; }
   .sf.sf-el.ct-activity .ct-activity-toggle {
     gap: 8px;
     min-height: 32px;

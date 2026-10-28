@@ -2,6 +2,12 @@
 
 Notable changes, newest first. This log starts with the update below.
 
+## 2026-10-28
+
+### Changed
+
+- Running turns show OMP's animated working indicator, elapsed time, and shimmering label above the message box.
+
 ## 2026-10-27
 
 ### Added

@@ -101,6 +101,31 @@ test('broken imports, incompatible updates and render failures leave the old UI 
   }
 });
 
+test('working clocks keep their origins through typing, session switches and reloads', async t => {
+  const { host, c, emit, render } = await setup(); t.after(() => host.close());
+  const elapsed = () => render().find(n => n.kind === 'elapsed')!;
+  emit('turn/started', { turn: { id: 'first', status: 'inProgress', startedAt: Date.now() / 1000 - 20, items: [] } });
+  const first = elapsed();
+  assert.ok(Number(first.props.age) >= 20_000);
+  host.current.draft.set('Typing while work continues');
+  assert.equal(elapsed(), first, 'typing leaves the native clock untouched');
+
+  await host.newSession();
+  assert.equal(elapsed(), undefined, 'idle sessions have no working clock');
+  emit('turn/started', { turn: { id: 'second', status: 'inProgress', startedAt: null, items: [] } });
+  const second = elapsed();
+  await new Promise(resolve => setTimeout(resolve, 30));
+  await c.resume('thread-1');
+  assert.ok(Number(elapsed().props.age) >= Number(first.props.age));
+  await c.resume('thread-2');
+  const returnedAge = Number(elapsed().props.age);
+  assert.ok(returnedAge >= Number(second.props.age) + 20, 'the fallback clock includes time in the background');
+  await host.reload();
+  assert.ok(Number(elapsed().props.age) >= returnedAge, 'reloading preserves an older backend’s fallback origin');
+  emit('turn/completed', { turn: { id: 'second', status: 'completed', items: [] } });
+  assert.equal(elapsed(), undefined);
+});
+
 test('reload rechecks pending input and cannot replace a closed window', async t => {
   for (const close of [false, true]) {
     const loading = deferred<UIModule>();

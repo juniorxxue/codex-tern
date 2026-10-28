@@ -18,7 +18,7 @@ import { Composer } from './composer';
 import { isRpcOutcomeUnknown } from './rpc';
 import type { ReasoningEffort } from './generated/ReasoningEffort';
 import type { UserInput } from './generated/v2/UserInput';
-import { Welcome, ComposerFrame } from './omp-views';
+import { Welcome, ComposerFrame, WorkingRow } from './omp-views';
 import { ompNode } from './omp-native';
 import { transcriptParts, activitySummary, compactActivity, type TranscriptPart } from './activity';
 import { appearanceStyles } from './appearance';
@@ -90,6 +90,8 @@ export class NativeUI {
   private savedDraft: Draft | null = null;
   private pickerSelected = '';
   private activityModes = new Map<string, 'expanded' | 'collapsed'>();
+  private workingTurns = new Map<string, { id: string; startedAt: number }>();
+  private workingRow?: { key: string; startedAt: number; reduceMotion: boolean; node: Node };
   private proposalSelections = new Map<string, Set<string>>();
   private proposalDrafts = new WeakMap<Draft, { text: string; prefix: string }>();
   private readonly folderSessions: FolderSessions;
@@ -231,7 +233,8 @@ export class NativeUI {
       panel: this.panel, renaming: this.renaming, allThreads: this.allThreads, pickerSelected: this.pickerSelected,
       pickerReturn: this.pickerReturn, folderBrowser: this.folderBrowser, workspaceError: this.workspaceError,
       focused: this.focused, visible: this.visible, sendMode: this.sendMode,
-      activityModes: this.activityModes, proposalSelections: this.proposalSelections, proposalDrafts: this.proposalDrafts,
+      activityModes: this.activityModes, workingTurns: this.workingTurns,
+      proposalSelections: this.proposalSelections, proposalDrafts: this.proposalDrafts,
       previews: this.previews, failedPreviews: this.failedPreviews, folder: this.folderSessions.reloadState(),
       reading: this.readingPositions.saved, tocLocation: this.tocLocation, tocSelections: this.tocSelections,
       tocError: this.tocError, tocLines: this.tocLines };
@@ -648,7 +651,7 @@ export class NativeUI {
     const mode = this.activityModes.get(key) ?? (live ? 'compact' : 'collapsed');
     const errors = part.entries.some(({ item }) => ('status' in item && (item.status === 'failed' || item.status === 'declined'))
       || (item.type === 'commandExecution' && item.exitCode != null && item.exitCode !== 0));
-    const state = live ? this.c.requests.length ? 'Needs input' : 'Working' : turn?.status === 'interrupted' ? 'Stopped'
+    const state = live ? this.c.requests.length ? 'Needs input' : 'Activity' : turn?.status === 'interrupted' ? 'Stopped'
       : turn?.status === 'failed' ? 'Failed' : this.c.connection === 'disconnected' && part.entries.some(e => !e.done) ? 'Disconnected' : 'Worked';
     const duration = !live && turn?.durationMs != null ? ` for ${Math.max(1, Math.round(turn.durationMs / 1000))}s` : '';
     const summary = activitySummary(part.entries);
@@ -662,9 +665,8 @@ export class NativeUI {
         }}>
         <icon key="chevron" role="ct.activity.chevron" name={mode === 'expanded' ? 'chev' : 'chev-r'} />
         <html.span key="indicator" class="ct-activity-indicator">
-          {live && !this.c.requests.length ? <spinner key="progress" style="starburst" />
-            : <icon name={state === 'Needs input' ? 'message' : state === 'Stopped' ? 'stop'
-              : state === 'Failed' || state === 'Disconnected' || errors ? 'warn' : 'check'} />}
+          <icon name={state === 'Needs input' ? 'message' : state === 'Stopped' ? 'stop'
+            : state === 'Failed' || state === 'Disconnected' || errors ? 'warn' : live ? 'clock' : 'check'} />
         </html.span>
         <html.span key="label" class="ct-activity-label">
           <text key="state" role="ct.activity.state" text={state} />
@@ -777,6 +779,30 @@ export class NativeUI {
     this.surface.render(this.rendered);
   }
 
+  private renderWorking() {
+    const thread = this.c.thread?.id, turn = this.c.activeTurn;
+    if (!thread || !turn) {
+      this.workingRow = undefined;
+      if (thread) this.workingTurns.delete(thread);
+      return null;
+    }
+    const previous = this.workingTurns.get(thread);
+    const timestamp = this.c.turns.get(turn)?.startedAt;
+    const startedAt = timestamp != null && Number.isFinite(timestamp) ? timestamp * 1000
+      : previous?.id === turn ? previous.startedAt : Date.now();
+    this.workingTurns.set(thread, { id: turn, startedAt });
+    if (this.c.requests.length) { this.workingRow = undefined; return null; }
+    const key = `${thread}:${turn}`, reduceMotion = this.session.caps.reduceMotion;
+    // Keep the native clock's origin stable while typing and streaming. Rebase
+    // only when remounting after a session switch, request, or window reload.
+    if (this.workingRow?.key === key && this.workingRow.startedAt === startedAt
+      && this.workingRow.reduceMotion === reduceMotion) return this.workingRow.node;
+    const node = <WorkingRow turnKey={key} age={Math.max(0, Math.round(Date.now() - startedAt))}
+      reduceMotion={reduceMotion} /> as Node;
+    this.workingRow = { key, startedAt, reduceMotion, node };
+    return node;
+  }
+
   render() {
     if (this.ended) return;
     this.syncComposer();
@@ -795,8 +821,6 @@ export class NativeUI {
     const displayModel = c.models.find(m => m.model === c.model)?.displayName ?? c.model;
     const parts = transcriptParts(c.items);
     const latestActivity = parts.findLast(p => p.kind === 'activity' && p.turnId === c.activeTurn);
-    const awaitingActivity = c.activeTurn && !c.requests.length && !parts.some(p => p.kind === 'activity'
-      ? p.turnId === c.activeTurn : p.entry.turnId === c.activeTurn && p.entry.item.type === 'agentMessage');
     // Each message stays in its own direct block for native virtualization.
     let main = <col role={`ct.transcript.${this.clientInstance}`}>
         {c.thread?.forkedFromId && <row key="origin" role="ct.fork.origin" gap="sm" align="center" wrap>
@@ -809,9 +833,6 @@ export class NativeUI {
         {c.historyCursor && <text key="earlier" tone="muted" text="Load earlier messages"
           onClick={() => this.action(() => c.loadHistory())} />}
         {parts.map(p => p.kind === 'message' ? this.renderItem(p.entry) : this.renderActivity(p, p === latestActivity))}
-        {awaitingActivity && <row key="pending" role="ct.pending" gap="sm" align="center">
-          <spinner style="starburst" /><text tone="muted" text="Working…" />
-        </row>}
         {!!c.activeTurn && !!c.plan.length && <checklist key="plan" phases={[{ title: 'Plan', items: c.plan.map((s, i) => ({
           id: `step${i}`, text: s.step, status: s.status === 'completed' ? 'done' : s.status === 'inProgress' ? 'active' : 'pending',
         })) }]} />}
@@ -863,6 +884,7 @@ export class NativeUI {
           {!c.busy && !c.unconfirmed.length && this.button('Run next', () => this.action(() => c.runQueue()))}
           <text tone="muted" text="Queued locally. Stops and errors pause the queue." />
         </section>}
+        {this.renderWorking()}
         <ComposerFrame running={!!c.activeTurn}>
           {this.answerTarget && <row key="answering" gap="sm"><text tone="accent" text="Answering a question" />
             {this.button('Back to message', () => this.finishAnswer())}</row>}

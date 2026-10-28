@@ -185,22 +185,22 @@ try {
 
   await send('QA_CONTINUING_TURN');
   await waitFor(() => text('[data-role="omp.assistant"]').includes('QA_INTERIM_ANSWER'), 'answer before the turn ends');
-  assert.equal(text('[data-role="ct.activity.state"]'), 'Working');
-  assert.equal(tree('.ct-activity-indicator .sf-spinner').length, 1);
+  assert.equal(text('[data-role="ct.activity.state"]'), 'Activity');
+  assert.equal(tree('[data-role="omp.working"] .sf-spinner').length, 1);
   assert.equal(tree('[data-role="omp.composer.stop"]').length, 1);
   await send('Keep the current core calculus');
   await waitFor(() => tree('[data-role="ct.activity.state"]').length === 2, 'continued activity after steering');
-  assert.deepEqual(tree('[data-role="ct.activity.state"]').map(n => n.text), ['Worked', 'Working']);
-  assert.equal(tree('.ct-activity-indicator .sf-spinner').length, 1);
+  assert.deepEqual(tree('[data-role="ct.activity.state"]').map(n => n.text), ['Worked', 'Activity']);
+  assert.equal(tree('[data-role="omp.working"] .sf-spinner').length, 1);
   assert.ok(text('.ct-activity-preview').includes('Thinking'));
   assert.equal(tree('[data-role="omp.composer.stop"]').length, 1);
   ctl('shot continuing-after-answer');
   await send('QA_FINISH_CONTINUING');
   await waitFor(() => tree('[data-role="omp.composer.stop"]').length === 0, 'continued turn finishes');
   assert.ok(tree('[data-role="ct.activity.state"]').every(n => n.text === 'Worked'));
-  assert.equal(tree('.ct-activity-indicator .sf-spinner').length, 0);
+  assert.equal(tree('[data-role="omp.working"] .sf-spinner').length, 0);
   assert.equal(tree('.ct-activity-preview').length, 0);
-  pass('delivered answers and steering keep the latest activity Working until turn completion');
+  pass('delivered answers and steering keep the working row visible until turn completion');
   key('ctrl+shift+n');
   await waitFor(() => tree('[data-role="omp.welcome"]').length === 1, 'blank session after continuing turn');
 
@@ -263,12 +263,13 @@ try {
   key('ctrl+shift+n'); await waitFor(() => tree('[data-role="omp.welcome"]').length === 1, 'new session shortcut');
 
   await send('hold');
-  await waitFor(() => text('.ct-activity').includes('Working'), 'running activity');
+  await waitFor(() => text('.ct-activity').includes('Activity'), 'running activity');
   assert.ok(!text('.ct-activity').includes('Run command'));
   assert.ok(text('.ct-activity-output').endsWith('QA_OUTPUT_999'));
   assert.ok(text('.ct-activity-output').length < 100);
-  assert.equal(tree('[data-role="ct.working"]').length, 0, 'the input area does not repeat Working');
-  assert.ok(!text('.sf-dock').includes('Working'));
+  assert.equal(tree('[data-role="ct.working"]').length, 0, 'no temporary operation duplicates the working row');
+  assert.equal(tree('[data-role="omp.working"]').length, 1);
+  assert.equal(tree('.ct-activity .sf-spinner').length, 0);
   assert.equal(tree(sendButton).length, 0, 'an empty running composer shows Stop without a disabled Send');
   const stopBox = tree('[data-role="omp.composer.stop"]')[0].rect;
   const stopMark = tree('.ct-stop-mark')[0].rect;
@@ -290,13 +291,13 @@ try {
   type('draft during work');
   const rpcBeforeReload = await readFile(rpcLog, 'utf8');
   const originalUI = await readFile(resolve(clientDist, uiManifest.file), 'utf8');
-  const updatedUI = originalUI.replaceAll('"Working"', '"Working after reload"');
+  const updatedUI = originalUI.replaceAll('"Activity"', '"Activity after reload"');
   assert.notEqual(updatedUI, originalUI);
   const updatedFile = `ui-${createHash('sha256').update(updatedUI).digest('hex')}.mjs`;
   await writeFile(resolve(clientDist, updatedFile), updatedUI);
   await writeFile(resolve(clientDist, 'ui.json'), JSON.stringify({ file: updatedFile }));
   await reloadWindow();
-  await waitFor(() => text('[data-role="ct.activity.state"]').includes('Working after reload'), 'updated renderer code');
+  await waitFor(() => text('[data-role="ct.activity.state"]').includes('Activity after reload'), 'updated renderer code');
   assert.ok(text('.sf-ed-text').includes('draft during work'));
   assert.equal(tree('[data-role="omp.composer.stop"]').length, 1);
   assert.equal(await readFile(rpcLog, 'utf8'), rpcBeforeReload, 'reload makes no backend calls or new process');
@@ -306,12 +307,12 @@ try {
   key('ctrl+shift+r');
   await waitFor(() => text('[data-role="omp.error"]').includes('Could not reload window'), 'failed reload keeps the old UI');
   assert.equal(generation(), beforeFailure);
-  assert.ok(text('[data-role="ct.activity.state"]').includes('Working after reload'));
+  assert.ok(text('[data-role="ct.activity.state"]').includes('Activity after reload'));
   assert.ok(text('.sf-ed-text').includes('draft during work'));
   click('[data-role="omp.error"] button');
   await writeFile(resolve(clientDist, 'ui.json'), JSON.stringify(uiManifest));
   await reloadWindow(true);
-  await waitFor(() => text('[data-role="ct.activity.state"]') === 'Working', 'original renderer restored');
+  await waitFor(() => text('[data-role="ct.activity.state"]') === 'Activity', 'original renderer restored');
   assert.equal(await readFile(rpcLog, 'utf8'), rpcBeforeReload);
   pass('Reload Window loads changed code during a turn, preserves typing and recovers from a missing build without backend calls');
   await waitFor(() => tree(`${sendButton}[aria-disabled="false"]`).length === 1, 'a running draft shows Send beside Stop');
@@ -328,7 +329,7 @@ try {
   await waitFor(() => ctl('state').prefs !== null, 'terminal settings while running');
   key('escape'); await waitFor(() => ctl('state').prefs === null, 'closed terminal settings while running');
   assert.ok(text('.sf-ed-text').includes('draft during work'));
-  assert.ok(text('.ct-activity').includes('Working'));
+  assert.ok(text('.ct-activity').includes('Activity'));
   key('super+a'); key('backspace');
   pass('terminal settings remain available during a task and retain the draft');
 
@@ -351,7 +352,7 @@ try {
   pass('reopen and hide completed details');
 
   key('ctrl+shift+n'); await pause(100);
-  await send('hold'); await waitFor(() => text('.ct-activity').includes('Working'), 'queue turn');
+  await send('hold'); await waitFor(() => text('.ct-activity').includes('Activity'), 'queue turn');
   click('[data-role="ct.composer.mode"]');
   await waitFor(() => text('.sf-layer').includes('Send while running'), 'choose queue mode');
   type('Queue'); key('enter');
@@ -546,7 +547,7 @@ try {
   pass('a backend crash before acknowledgement retains one message for review without replay');
 
   key('super+a'); key('backspace'); await send('hold');
-  await waitFor(() => text('.ct-activity').includes('Working'), 'task before recovery test');
+  await waitFor(() => text('.ct-activity').includes('Activity'), 'task before recovery test');
   if (text('[data-role="ct.composer.mode"]') !== 'Queue') {
     click('[data-role="ct.composer.mode"]'); type('Queue'); key('enter');
   }

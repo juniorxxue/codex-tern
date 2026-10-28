@@ -19,3 +19,16 @@ export function Welcome() {
 export function ComposerFrame(props: { running: boolean; children: Children }) {
   return <col key="body" role="omp.editor" tone={props.running ? 'pending' : undefined}>{props.children}</col>;
 }
+
+/** Same native working row as OMP's loader. Tern clocks the motion and timer. */
+export function WorkingRow(props: { turnKey: string; age: number; reduceMotion: boolean }) {
+  return <row key={`working-${props.turnKey}`} role="omp.working" align="center" gap="sm">
+    <spinner key="spinner" style="starburst" tone="accent" />
+    <elapsed key="elapsed" age={props.age} format="short" />
+    <text key="sep" role="omp.working.sep" text="·" />
+    {props.reduceMotion ? <text key="label" role="omp.working.label" tone="muted" text="Working…" />
+      : <shimmer key="label" role="omp.working.label" text="Working…" mode="classic"
+        palette={{ low: 'dim', mid: 'muted', high: 'accent' }} />}
+    <row key="fill" grow={1} />
+  </row>;
+}

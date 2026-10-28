@@ -5,6 +5,7 @@
 The native node layouts in `src/omp-views.tsx` and `src/ui.tsx` are adapted from [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi), retrieved on 2026-10-21:
 
 - `packages/tui/src/prompt/custom-editor.ts` — composer frame, input line, model/effort chips, send/stop controls.
+- `packages/tui/src/components/loader.ts` — animated working row, elapsed time, and shimmering label.
 - `packages/tui/src/prompt/welcome.ts` — welcome lockup.
 - `packages/tui/src/chat/user-message.ts` and `assistant-message.ts` — transcript nodes.
 - `packages/tui/src/prompt/attachment-chips.ts` — image thumbnail cards.
