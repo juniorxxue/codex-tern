@@ -265,7 +265,7 @@ export const appearanceStyles = css`
   }
   .sf.sf-col[data-role="omp.editor"],
   .sf.sf-row[data-role="omp.working"],
-  .sf.sf-section[data-role="omp.queue"],
+  .sf.sf-col[data-role="omp.queue"],
   .sf.sf-el.ct-request {
     width: 100%;
     max-width: 768px;
@@ -434,11 +434,20 @@ export const appearanceStyles = css`
     line-height: 20px;
   }
   .sf.sf-el.ct-activity .ct-activity-toggle {
+    /* Keep the summary left aligned and clear of Tern's default button skin. */
+    justify-content: flex-start;
     gap: 8px;
+    height: auto;
     min-height: 32px;
     padding: 6px 0;
+    border: 0;
     border-radius: 6px;
+    background: transparent;
+    box-shadow: none;
     font: inherit;
+    white-space: normal;
+    transform: none;
+    transition: color 0.15s var(--ease);
   }
   .sf.sf-el.ct-activity [data-role="ct.activity.chevron"] { width: 12px; height: 12px; flex-shrink: 0; }
   .sf.sf-el.ct-activity .ct-activity-indicator {

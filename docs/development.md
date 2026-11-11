@@ -34,6 +34,8 @@ Every native QA script prepares an isolated `TERN_CONFIG_DIR` with `scripts/qa-t
 
 `bun run test:ui` requires Tern and checks native interface scenarios without calling a model. This includes sent image sizing, image-only messages, multiple images, zoom, restored history, and resolving an unconfirmed send while preserving a new draft. Screenshots and results go to `.prototype/ui-qa/`.
 
+`bun run test:queue` checks queued-message previews, counts, pause, removal and execution in an isolated native window. It also checks the Activity summary's transparent background and left alignment in light, dark and narrow layouts. Screenshots go to `.prototype/queue-style-qa/`.
+
 `bun run test:settings` checks saved new-session models, preserving running work, workspace validation and directory browsing, restart/reset behavior, and light, dark and narrow dialog layouts. It uses an isolated preferences file under its `XDG_STATE_HOME`; screenshots and results go to `.prototype/settings-qa/`.
 
 `bun run test:proposals` checks stacked prose revisions, selection and prompt drafting, streamed and restored replies, word highlights, formula sizing and narrow windows in an isolated Tern test client. Screenshots and results go to `.prototype/proposals-qa/`.

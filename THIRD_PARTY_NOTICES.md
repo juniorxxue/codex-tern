@@ -9,6 +9,7 @@ The native node layouts in `src/omp-views.tsx` and `src/ui.tsx` are adapted from
 - `packages/tui/src/prompt/welcome.ts` — welcome lockup.
 - `packages/tui/src/chat/user-message.ts` and `assistant-message.ts` — transcript nodes.
 - `packages/tui/src/prompt/attachment-chips.ts` — image thumbnail cards.
+- `packages/tui/src/prompt/queued-messages.ts` — compact queued-message rows and inline controls (from `@oh-my-pi/pi-tui` 18.12.5).
 - `packages/coding-agent/src/utils/enhanced-paste.ts` — OSC 5522 paste negotiation.
 - `packages/tui/src/native/picker.ts` — native picker structure and actions.
 - `packages/tui/src/status-line/footer.ts` — compact status segments.

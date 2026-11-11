@@ -2,6 +2,16 @@
 
 Notable changes, newest first. This log starts with the update below.
 
+## 2026-11-12
+
+### Changed
+
+- Queued messages use OMP's compact rows above the composer, with a queue icon, single-line preview, inline controls and a shared count or paused badge. The old collapsible heading and explanatory footer are removed.
+
+### Fixed
+
+- Restored the Activity summary's transparent background and left-aligned text so it no longer appears as a full-width gray button.
+
 ## 2026-11-11
 
 ### Added

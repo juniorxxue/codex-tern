@@ -952,12 +952,21 @@ export class NativeUI {
             </row>
           </col>)}
         </section>}
-        {!!c.queue.length && <section key="queue" role="omp.queue" head={`Queued · ${c.queue.length}${c.queuePaused ? ' · paused' : ''}`} collapsible>
-          {c.queue.map(q => <row key={q.id} role="omp.queue.item" justify="between"><text text={q.text || '[Image]'} lines={2} />
-            {this.button('Remove', () => c.removeQueued(q.id))}</row>)}
-          {!c.busy && !c.unconfirmed.length && this.button('Run next', () => this.action(() => c.runQueue()))}
-          <text tone="muted" text="Queued locally. Stops and errors pause the queue." />
-        </section>}
+        {!!c.queue.length && <col key="queue" role="omp.queue" gap="xs">
+          {c.queue.map((q, index) => <row key={q.id} role="omp.queue.item" align="center" gap="sm" title={q.text || 'Queued image'}>
+            <icon key="icon" name="corner-down-right" />
+            <text key="text" text={(q.text || (q.images.length === 1 ? '[Image]' : `[${q.images.length} images]`))
+              .replace(/\t/g, ' ').replace(/\s*\r?\n\s*/g, ' ↵ ')} wrap="none" truncate="end" grow={1} />
+            {index === 0 && (c.queue.length > 1 || c.queuePaused) && <badge key="count" role="omp.queue.count"
+              text={[c.queue.length > 1 ? `${c.queue.length} queued` : '', c.queuePaused ? 'paused' : ''].filter(Boolean).join(' · ')} />}
+            {index === 0 && !c.busy && !c.unconfirmed.length && <row key="run" role="omp.queue.edit" align="center" gap="xs"
+              aria="Run next" title="Run next queued message" onClick={() => this.action(() => c.runQueue())}>
+              <icon name="play" /><text text="Run next" />
+            </row>}
+            <row key="remove" role="omp.queue.edit" align="center" gap="xs" aria="Remove queued message" title="Remove queued message"
+              onClick={() => c.removeQueued(q.id)}><icon name="x" /><text text="Remove" /></row>
+          </row>)}
+        </col>}
         {this.renderWorking()}
         <ComposerFrame running={!!c.activeTurn}>
           {this.answerTarget && <row key="answering" gap="sm"><text tone="accent" text="Answering a question" />
