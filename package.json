@@ -22,6 +22,7 @@
     "test:sessions": "bun scripts/sessions-qa.mjs",
     "test:startup": "bun scripts/startup-qa.mjs",
     "test:reading-position": "bun scripts/reading-position-qa.mjs",
+    "test:prompt-tree": "bun scripts/prompt-tree-qa.mjs",
     "test:session-actions": "bun scripts/session-actions-qa.mjs",
     "test:session-titles": "bun scripts/session-titles-qa.mjs",
     "test:toc": "bun scripts/toc-qa.mjs",

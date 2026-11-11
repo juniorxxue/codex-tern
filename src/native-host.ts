@@ -21,7 +21,7 @@ export async function loadNativeUI(manifest = new URL('../dist/ui.json', import.
 }
 
 function validate(module: UIModule) {
-  if (module.UI_API_VERSION !== 4 || typeof module.NativeUI !== 'function')
+  if (module.UI_API_VERSION !== 8 || typeof module.NativeUI !== 'function')
     throw new Error('This update needs a client restart. Finish running tasks, then restart codex-tern.');
 }
 
@@ -42,6 +42,7 @@ export class NativeHost {
   get openProject() { return this.current.openProject; }
   set openProject(value: NativeUI['openProject']) { this.current.openProject = value; }
   openSession(id: string) { return this.current.openSession(id); }
+  openPrompt(...args: Parameters<NativeUI['openPrompt']>) { return this.current.openPrompt(...args); }
   newSession() { return this.current.newSession(); }
   openSidebar() { return this.current.openSidebar(); }
 

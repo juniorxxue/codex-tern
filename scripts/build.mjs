@@ -3,8 +3,9 @@ import { writeFile } from 'node:fs/promises';
 import { appearanceStyles } from '../src/appearance.ts';
 import { buildUI } from './build-ui.mjs';
 await build({
-  entryPoints: ['src/cli.ts'],
-  outfile: 'dist/cli.mjs',
+  entryPoints: ['src/cli.ts', 'src/prompt-tree-worker.ts'],
+  outdir: 'dist',
+  outExtension: { '.js': '.mjs' },
   bundle: true,
   platform: 'node',
   format: 'esm',

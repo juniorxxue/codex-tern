@@ -35,6 +35,18 @@ test('project aliases share an instance; independent folders and profiles do not
   assert.notEqual(await projectAddress(dir, dir + '-other-profile'), address);
 });
 
+test('project navigation forwards a fork prompt and rejects anchors for a different session', async t => {
+  const { address, owners } = await fixture(t);
+  const received: unknown[] = [];
+  const owner = await serveProject(address, command, async request => { received.push(request.promptAnchor); });
+  assert.ok(owner); owners.push(owner);
+  const anchor = { threadId: 'fork', turnId: 'turn', itemId: 'prompt' };
+  assert.equal(await contactProject(address, { ...command, resume: 'fork', promptAnchor: anchor }), true);
+  assert.deepEqual(received, [anchor]);
+  await assert.rejects(contactProject(address, { ...command, resume: 'other', promptAnchor: anchor }));
+  assert.equal(received.length, 1);
+});
+
 test('subfolders in one repository share a project instance', async t => {
   const { dir } = await fixture(t);
   await mkdir(join(dir, '.git')); await mkdir(join(dir, 'src'));

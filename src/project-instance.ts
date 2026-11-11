@@ -3,8 +3,10 @@ import { realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { IpcConnection, IpcServer, ipcEndpoint } from '@oh-my-pi/pi-natives';
+import { validPromptAnchor } from './prompt-anchor';
+import type { PromptAnchor } from './prompt-anchor';
 
-export interface ProjectCommand { version: 1; signature: string; resume?: string; prompt?: string }
+export interface ProjectCommand { version: 1; signature: string; resume?: string; prompt?: string; promptAnchor?: PromptAnchor }
 export interface ProjectInstance { close(): Promise<void> }
 
 export async function projectRoot(cwd: string) {
@@ -77,6 +79,7 @@ export async function serveProject(address: string, command: ProjectCommand,
           request = JSON.parse(line);
           if (request.version !== 1 || request.signature !== command.signature
             || (request.resume !== undefined && typeof request.resume !== 'string')
+            || (request.promptAnchor !== undefined && (!validPromptAnchor(request.promptAnchor) || request.promptAnchor.threadId!==request.resume))
             || (request.prompt !== undefined && typeof request.prompt !== 'string'))
             throw new Error('This project is already open with different settings. Exit its client before changing the backend settings.');
         } catch (error) { reply(error); return; }

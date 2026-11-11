@@ -50,6 +50,18 @@ Every native QA script prepares an isolated `TERN_CONFIG_DIR` with `scripts/qa-t
 
 `bun run test:session-actions` uses an isolated native Tern window and a fixed backend to check reply-footer forks, exact history cutoffs, independent drafts and running tasks, context-menu renames, cancellation, errors, and persisted names after relaunch. It also checks recorded native events for transient protocol errors.
 
+## Conversation tree
+
+`src/prompt-tree.ts` identifies fork families through `sessionId` and `forkedFromId`, excluding subagent parent relationships. Original turn and item identities establish shared history. The map labels only fork junctions and keeps an unlabelled endpoint for each session, including untouched forks.
+
+The controller owns a lazy `PromptTreeService`. Its separate worker reads saved metadata and history through a read-only app-server connection. It starts only when the tree or a prompt link is opened. Missing `thread/list` fork relationships are recovered with metadata-only `thread/read` requests in batches of four and cached until explicit refresh. Prompt histories are cached by revision, invalidated by live messages, and cancelled when the map closes. The worker has no search index or model calls.
+
+`PromptTreeState` preserves the same graph across branch selection and rejects stale reads. Native buttons and connectors sit in the conversation layer, with the chat font and theme. Selecting a node verifies the original prompt before switching, loads contiguous history through it, and reveals it in the normal chat. Later replies remain available by scrolling. The existing composer and reading-position objects preserve drafts, attachments and undo history.
+
+Project IPC and the internal `--prompt-anchor` argument carry exact prompt targets across project windows. Profile directory settings follow the new window. Tree navigation skips auxiliary outline generation; ordinary session opening retains its existing behavior. UI API version 8 requires one restart for existing clients.
+
+`bun run test:prompt-tree` checks an isolated native window with fixture data: exact jumps, both branch directions with omitted metadata, retained drafts and undo, light/dark/compact layouts, deep history and fork cutoffs. Unit tests also cover worker lifecycle and project handoffs. Output stays in `.prototype/prompt-tree-qa/`.
+
 ## Architecture
 
 `src/rpc.ts` handles one stdio RPC connection per project instance. Its request return types come from the generated protocol. It validates incoming envelopes, the response containers used by the client, and essential fields in handled events before dispatch. Unknown methods stay inspectable. Timeout, disconnect and malformed responses use `RpcOutcomeUnknown`; an explicit backend rejection remains `RpcError`.

@@ -9,9 +9,11 @@ import { Controller } from './controller';
 import { RecoveryStore, recoveryPath } from './recovery';
 import { Preferences, preferencesPath } from './preferences';
 import type { ProjectInstance, ProjectCommand } from './project-instance';
+import type { PromptAnchor } from './prompt-anchor';
 
 async function main() {
   const options = parseOptions(process.argv.slice(2));
+  if (options.native) Object.assign(process.env, options.runtimeEnv);
   if (options.help) { console.log(HELP); return; }
   if (options.version) { console.log(VERSION); return; }
   if (options.command) {
@@ -27,6 +29,7 @@ async function main() {
   const address = projects ? await projects.projectAddress(options.cwd) : undefined;
   const command: ProjectCommand = { version: 1, signature: JSON.stringify([codex, options.config]),
     ...(options.resume ? { resume: options.resume } : {}),
+    ...(options.promptAnchor ? { promptAnchor: options.promptAnchor } : {}),
     ...(options.prompt !== undefined ? { prompt: options.prompt } : {}) };
   if (projects && address && await projects.contactProject(address, command)) return;
   const rpc = new CodexRpc({ binary: codex, cwd: options.cwd,
@@ -40,7 +43,7 @@ async function main() {
     shuttingDown = true; c.connection = 'disconnected';
     // Keep the project lease until the final journal is saved. A new client
     // must not read an older snapshot while this backend is still closing.
-    try { await rpc.close(); await c.flushRecovery(); await c.flushOutlines(); }
+    try { await c.promptTree.close(); await rpc.close(); await c.flushRecovery(); await c.flushOutlines(); }
     finally { await instance?.close(); }
   };
   try {
@@ -53,13 +56,13 @@ async function main() {
     let ready!: () => void;
     const started = new Promise<void>(resolve => { ready = resolve; });
     if (ui && projects && address) {
-      const openProject = async (cwd: string, resume?: string, prompt?: string) => {
+      const openProject = async (cwd: string, resume?: string, prompt?: string, promptAnchor?: PromptAnchor) => {
         const target = await projects.projectAddress(cwd);
-        const request: ProjectCommand = { version: 1, signature: command.signature, resume, prompt };
+        const request: ProjectCommand = { version: 1, signature: command.signature, resume, prompt, promptAnchor };
         if (await projects.contactProject(target, request)) return true;
-        return await openTern(fileURLToPath(import.meta.url), nativeArgs({ ...options, cwd, resume, prompt }, codex), cwd) === 0;
+        return await openTern(fileURLToPath(import.meta.url), nativeArgs({ ...options, cwd, resume, prompt, promptAnchor }, codex), cwd) === 0;
       };
-      ui.openProject = openProject;
+      ui.openProject = (cwd, resume, anchor) => openProject(cwd, resume, undefined, anchor);
       instance = await projects.serveProject(address, command, async request => {
         await started;
         if (shuttingDown || c.connection !== 'ready' || !c.thread) throw new Error('The project is not connected.');
@@ -68,11 +71,11 @@ async function main() {
           if (!rpc.ownsThread(request.resume)) {
             const result = await rpc.request('thread/read', { threadId: request.resume, includeTurns: false });
             if (result.thread?.cwd && await projects.projectAddress(result.thread.cwd) !== address) {
-              if (!await openProject(result.thread.cwd, request.resume, request.prompt)) throw new Error('Could not open the project.');
+              if (!await openProject(result.thread.cwd, request.resume, request.prompt, request.promptAnchor)) throw new Error('Could not open the project.');
               return;
             }
           }
-          if (!await ui.openSession(request.resume)) throw new Error('This session is unavailable or open in another client.');
+          if (!await (request.promptAnchor ? ui.openPrompt(request.promptAnchor) : ui.openSession(request.resume))) throw new Error('This session is unavailable or open in another client.');
         } else if (request.prompt !== undefined && !await ui.newSession()) throw new Error('Could not create a session.');
         if (request.prompt !== undefined) await c.submit(request.prompt);
       });
@@ -83,7 +86,8 @@ async function main() {
       c.useOutlines(join(dirname(dirname(recoveryFile)), 'outlines', basename(recoveryFile, '.json')));
     }
     // Never await backend work in the UI input loop: approvals and cancellation stay live.
-    const connection = c.connect(options.resume, options.prompt !== undefined).then(async () => {
+    const connection = c.connect(options.resume, options.prompt !== undefined, !options.promptAnchor).then(async () => {
+      if (ui && options.promptAnchor) { await focusClient(); await ui.openPrompt(options.promptAnchor); }
       if (options.prompt !== undefined) await c.submit(options.prompt);
     }).catch(e => {
       c.notice(e.message, true); c.connection = rpc.connected ? 'ready' : 'disconnected'; c.changed();

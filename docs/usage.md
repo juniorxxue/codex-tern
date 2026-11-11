@@ -46,6 +46,14 @@ The same right-click menu has **Rename session**. Enter a name and press **Enter
 
 Sessions sort by last conversation activity, newest first. Sending a message or completing a task moves that session up, including background tasks. Opening an old session alone does not move it to the top. Refresh and pagination preserve this activity order.
 
+## Conversation tree
+
+Click the branch icon at the right edge of a conversation to show its vertical tree. It starts collapsed. Only fork points have prompt labels; ordinary messages are omitted. Hover for more text. The tree uses the conversation's font and the native light or dark theme.
+
+Click a fork point to jump straight to that prompt in the normal chat. Later replies remain available by scrolling. A shared ancestor stays in your selected branch when possible. Small dots at branch ends switch sessions at their last fork point; hover to see the session name. The same tree stays visible with the selected branch highlighted. Shared history appears once, and a new fork appears before its first new prompt. The map includes saved, non-archived forks. **Refresh** picks up branches created in another client. **Hide** folds the map back into its icon.
+
+Opening and navigating the tree never calls a model. Your drafts, attachments, undo history and running tasks stay with their sessions. **Fork from here** below a completed reply uses the existing fork behavior, including for older prompts reached through the tree. Interface labels are English; prompt excerpts keep their original language.
+
 ## Session TOC
 
 The **Session TOC** is a separate native card. It starts below **Sessions** and follows the selected conversation. Use its own drag handle and dividers to move or resize it anywhere in the layout. Closing either card leaves the other available. Reopen the outline with **Codex: Session TOC** in Tern's command palette.

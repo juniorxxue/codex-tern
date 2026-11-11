@@ -14,6 +14,7 @@ import { AuxiliaryAgent } from './auxiliary-agent';
 import { SessionOutlines } from './session-outlines';
 import { outlineTurns } from './session-outline';
 import { Preferences } from './preferences';
+import { PromptTreeService } from './prompt-tree-service';
 export type { DisplayItem, PendingRequest, QueuedInput, Notice } from './conversation';
 export interface Completion { threadId: string; turnId: string; title: string; status: 'completed' | 'failed' }
 
@@ -37,9 +38,11 @@ export class Controller extends EventEmitter {
   private readonly titleChanges = new Map<string, { name: string; revision: string }>();
   private readonly nameWrites = new Map<string, Promise<void>>();
   notifications = true;
+  readonly promptTree: PromptTreeService;
 
   constructor(readonly rpc: CodexRpc, cwd: string, readonly preferences = new Preferences()) {
     super();
+    this.promptTree = new PromptTreeService(rpc.options);
     this.auxiliary = new AuxiliaryAgent(() => rpc.createPeer());
     this.titles = new SessionTitles(this.auxiliary);
     this.selected = this.create(cwd);
@@ -56,6 +59,9 @@ export class Controller extends EventEmitter {
       const target = id ? this.conversation(id) : this.selected;
       if (target && message.method === 'thread/closed') target.hydrated = false;
       target?.onNotification(message);
+      if (id && (['turn/completed', 'thread/started', 'thread/archived', 'thread/deleted'].includes(message.method ?? '')
+        || (message.method === 'item/completed' && message.params.item.type === 'userMessage')))
+        this.promptTree.invalidate(id);
     });
     rpc.on('request', (message: RpcMessage) => {
       const id = message.params?.threadId;
@@ -98,7 +104,7 @@ export class Controller extends EventEmitter {
       && !conversation?.requests.length && !conversation?.queue.length
       && !conversation?.unconfirmed.length && !conversation?.inflight;
   }
-  private async prepareSession(id: string, recoverEmpty = false) {
+  private async prepareSession(id: string, recoverEmpty = false, refreshOutline = true) {
     const next = this.conversation(id);
     if (!next.hydrated) {
       try { await next.resume(id); }
@@ -117,7 +123,7 @@ export class Controller extends EventEmitter {
       }
       next.hydrated = true;
       await this.outlines?.load(id);
-      void this.outlines?.resume(id, this.auxiliaryModel(next), outlineTurns(next.items, next.turns));
+      if (refreshOutline) void this.outlines?.resume(id, this.auxiliaryModel(next), outlineTurns(next.items, next.turns));
     }
     return next;
   }
@@ -360,7 +366,7 @@ export class Controller extends EventEmitter {
     if (version !== this.metadataVersion) throw new Error('Codex disconnected while connecting.');
   }
 
-  async connect(resumeId?: string, fresh = false) {
+  async connect(resumeId?: string, fresh = false, refreshOutline = true) {
     try { await this.preferences.load(); }
     catch (error) { this.notice(`Could not read new session preferences: ${(error as Error).message}`, true); }
     await this.rpc.start();
@@ -369,7 +375,7 @@ export class Controller extends EventEmitter {
     const id = resumeId ?? (fresh ? undefined : this.recovery?.selected);
     if (id) {
       if (this.recovery?.session(id)) { this.selected = this.conversation(id); this.changed(); }
-      await this.resume(id, resumeId === undefined);
+      await this.resume(id, resumeId === undefined, refreshOutline);
     } else await this.newThread();
     this.sessionsVersion++; this.changed();
   }
@@ -406,13 +412,13 @@ export class Controller extends EventEmitter {
       this.selected = await this.prepareNew(cwd); this.sessionsVersion++;
     } finally { this.navigation = ''; this.changed(); }
   }
-  async resume(id: string, recoverEmpty = false) {
+  async resume(id: string, recoverEmpty = false, refreshOutline = true) {
     this.ensureSelection();
     const cached = this.find(id);
     if (cached?.hydrated) { this.selected = cached; this.changed(); return; }
     this.navigation = 'Opening session…'; this.changed();
     try {
-      this.selected = await this.prepareSession(id, recoverEmpty);
+      this.selected = await this.prepareSession(id, recoverEmpty, refreshOutline);
     } finally { this.navigation = ''; this.changed(); }
   }
   forkReply(turnId: string) {

@@ -8,6 +8,7 @@ import type { ThreadStartResponse } from './generated/v2/ThreadStartResponse';
 import type { ThreadResumeResponse } from './generated/v2/ThreadResumeResponse';
 import type { ThreadReadResponse } from './generated/v2/ThreadReadResponse';
 import type { ThreadListResponse } from './generated/v2/ThreadListResponse';
+import type { ThreadItemsListResponse } from './generated/v2/ThreadItemsListResponse';
 import type { ThreadTurnsListResponse } from './generated/v2/ThreadTurnsListResponse';
 import type { ThreadArchiveResponse } from './generated/v2/ThreadArchiveResponse';
 import type { ThreadForkResponse } from './generated/v2/ThreadForkResponse';
@@ -28,6 +29,7 @@ interface Responses {
   'thread/read': ThreadReadResponse;
   'thread/list': ThreadListResponse;
   'thread/turns/list': ThreadTurnsListResponse;
+  'thread/items/list': ThreadItemsListResponse;
   'thread/archive': ThreadArchiveResponse;
   'thread/fork': ThreadForkResponse;
   'thread/name/set': ThreadSetNameResponse;
@@ -123,9 +125,13 @@ export function validateResult(method: Method, value: unknown): void {
     && (!record(value.thread) || typeof value.thread.id !== 'string')) throw new Error(`Invalid ${method} thread`);
   if (['thread/start', 'thread/resume', 'thread/fork'].includes(method) && typeof value.cwd !== 'string') throw new Error(`Invalid ${method} workspace`);
   if (method === 'turn/start' && (!record(value.turn) || typeof value.turn.id !== 'string')) throw new Error('Invalid turn/start turn');
-  if (['model/list', 'thread/list', 'thread/turns/list'].includes(method) && !Array.isArray(value.data))
+  if (['model/list', 'thread/list', 'thread/turns/list', 'thread/items/list'].includes(method) && !Array.isArray(value.data))
     throw new Error(`Invalid ${method} page`);
   if (method === 'thread/turns/list') (value.data as unknown[]).forEach(turn => validateTurn(turn, true));
+  if (method === 'thread/items/list') (value.data as unknown[]).forEach(entry => {
+    if (!record(entry) || typeof entry.turnId !== 'string') throw new Error('Invalid history item');
+    validateItem(entry.item);
+  });
   if (method === 'thread/list' && !(value.data as unknown[]).every(t => record(t)
     && typeof t.id === 'string' && typeof t.cwd === 'string')) throw new Error('Invalid thread list');
 }

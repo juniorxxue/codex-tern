@@ -4,6 +4,10 @@ Notable changes, newest first. This log starts with the update below.
 
 ## 2026-11-11
 
+### Added
+
+- A collapsed conversation tree shows fork points and branches. Clicking a branch opens its full chat at the fork prompt. The same tree stays visible with the current branch highlighted, including when session lists omit fork metadata. Drafts, attachments and running work stay with their sessions.
+
 ### Fixed
 
 - Folder, account and notices are centered below the composer again after Tern's Reader styles stopped applying to the Codex surface.

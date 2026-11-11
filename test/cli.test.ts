@@ -23,6 +23,17 @@ test('Codex-style arguments preserve prompts and repeated backend configuration 
   assert.throws(() => parseOptions(['--unknown']), /Unknown option/);
 });
 
+test('fork navigation preserves exact prompt anchors and profile directories across project launches', () => {
+  const anchor = { threadId: 'fork', turnId: 'turn', itemId: 'prompt' };
+  const options = parseOptions(['--resume', 'fork', '--prompt-anchor', JSON.stringify(anchor),
+    '--runtime-env', JSON.stringify({ CODEX_HOME: '/tmp/fork-profile', XDG_STATE_HOME: '/tmp/fork-state' })]);
+  const relaunched = parseOptions(nativeArgs(options, '/tmp/codex'));
+  assert.deepEqual(relaunched.promptAnchor, anchor); assert.deepEqual(relaunched.runtimeEnv, options.runtimeEnv);
+  assert.throws(() => parseOptions(['--resume', 'other', '--prompt-anchor', JSON.stringify(anchor)]), /must belong/);
+  assert.throws(() => parseOptions(['--resume', 'fork', '--prompt-anchor', JSON.stringify({ ...anchor, itemId: '' })]), /must belong/);
+  assert.throws(() => parseOptions(['--runtime-env', JSON.stringify({ PATH: '/tmp' })]), /directory settings/);
+});
+
 async function fixture(t: any) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'codex-tern-entry-')));
   t.after(() => rm(dir, { recursive: true, force: true }));
