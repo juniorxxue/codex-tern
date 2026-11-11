@@ -2,6 +2,12 @@
 
 Notable changes, newest first. This log starts with the update below.
 
+## 2026-11-11
+
+### Fixed
+
+- Folder, account and notices are centered below the composer again after Tern's Reader styles stopped applying to the Codex surface.
+
 ## 2026-10-28
 
 ### Changed

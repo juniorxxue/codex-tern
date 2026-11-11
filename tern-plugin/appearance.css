@@ -411,7 +411,12 @@
     font-family: inherit;
     font-size: inherit;
     line-height: inherit;
+    box-shadow: none;
   }
+  /* Tern scopes Reader's centered status to .sf-chat-reader. Our separate
+     surface keeps the same native status layout without that host marker. */
+  .sf.sf-row[data-role="ct.nav"] .sf-status[data-role="omp.status"] .sf-st-row { justify-content: center; }
+  .sf.sf-row[data-role="ct.nav"] .sf-status[data-role="omp.status"] .sf-st-r { margin-left: 0; }
   .sf.sf-row[data-role="ct.nav"] .sf-seg-t {
     font-family: inherit;
     font-size: inherit;
