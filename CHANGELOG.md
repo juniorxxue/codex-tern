@@ -10,6 +10,7 @@ Notable changes, newest first. This log starts with the update below.
 
 ### Fixed
 
+- Question panels use the theme's fonts for prompts, choices, custom answers and buttons, including in chats already running.
 - Restored the Activity summary's transparent background and left-aligned text so it no longer appears as a full-width gray button.
 
 ## 2026-11-11

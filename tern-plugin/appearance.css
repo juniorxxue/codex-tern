@@ -535,6 +535,13 @@
   .sf.sf-el.ct-button.ct-danger:hover { color: var(--bad); }
   .sf.sf-el.ct-button[aria-disabled="true"] { background: var(--l2); color: var(--t3); opacity: 0.6; cursor: default; }
   .sf.sf-el.ct-button.ct-quiet { align-self: flex-start; border-color: transparent; padding-left: 0; padding-right: 0; }
+  /* Native question controls set their own --sans font instead of inheriting. */
+  .sf.sf-col[data-role="ct.question.dock"],
+  .sf.sf-col[data-role="omp.overlay.hook-editor"],
+  .sf.sf-col[data-role="ct.questions"] {
+    --sans: var(--ct-prose);
+    font-family: var(--ct-prose);
+  }
   .sf.sf-el.ct-request {
     padding: 16px;
     border: 1px solid var(--l2);
