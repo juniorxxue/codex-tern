@@ -6,6 +6,8 @@ Notable changes, newest first. This log starts with the update below.
 
 ### Changed
 
+- The light theme uses an opaque white conversation background, neutral gray sidebars and pale gray user messages.
+- Slightly heavier text across conversations, the composer and sidebars improves readability, with stronger headings and selected rows.
 - Queued messages use OMP's compact rows above the composer, with a queue icon, single-line preview, inline controls and a shared count or paused badge. The old collapsible heading and explanatory footer are removed.
 
 ### Fixed

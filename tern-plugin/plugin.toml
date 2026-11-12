@@ -5,4 +5,4 @@ version = "0.1.0"
 description = "Independent native cards for folder sessions and the current conversation's topics."
 icon = "app-codex"
 window = "window.luau"
-styles = ["sessions.css", "appearance.css"]
+styles = ["sessions.css", "appearance.css", "theme.css"]

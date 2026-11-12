@@ -1,0 +1,29 @@
+/* Opaque light surfaces keep the reading area independent of desktop tint. */
+[data-theme="light"] .tn-pane:has([data-surface="codex-tern"]) {
+  --card: #ffffff;
+  --raise: #f3f3f3;
+  --code-bg: #f3f3f3;
+}
+[data-theme="light"] .tn-pane:has([data-surface="codex-tern"]) > .tn-body {
+  background: #ffffff !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+[data-theme="light"] .tn-pane:has([data-role="codex-tern.sessions"]) > .tn-body,
+[data-theme="light"] .tn-pane:has([data-role="codex-tern.toc"]) > .tn-body {
+  background: #ebebeb !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+[data-theme="light"] [data-surface="codex-tern"] .sf-card[data-role="omp.user"] { background: transparent !important; }
+[data-theme="light"] [data-surface="codex-tern"] [data-role="omp.user"] > .sf-card-body { background: #f3f3f3 !important; }
+[data-theme="light"] [data-surface="codex-tern"] [data-role="omp.editor"] > [data-role="omp.composer.line"] {
+  background: #ffffff !important;
+  border-color: #d8d8d8 !important;
+}
+[data-theme="light"] [data-role="codex-tern.sessions.item"]:hover,
+[data-theme="light"] [data-role="codex-tern.toc.topic"]:hover,
+[data-theme="light"] [data-role="codex-tern.toc.child"]:hover { background: #e2e2e2 !important; }
+[data-theme="light"] [data-role="codex-tern.sessions.item"][data-mark="pick"],
+[data-theme="light"] [data-role="codex-tern.toc.topic"][data-mark="pick"],
+[data-theme="light"] [data-role="codex-tern.toc.child"][data-mark="pick"] { background: #d5d5d5 !important; }

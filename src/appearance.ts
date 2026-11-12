@@ -5,7 +5,8 @@ import { css } from '@stencil-hq/tern';
 // Open leading for mixed Chinese/English text, using the installed reading fonts.
 export const appearanceStyles = css`
   .sf {
-    --ct-prose: "Concourse T3", "LXGW Neo XiHei", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif;
+    --ct-prose: "Concourse T4", "LXGW Neo XiHei", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif;
+    --ct-prose-semibold: "Concourse T6", "LXGW Neo XiHei", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif;
   }
   /* Form dialogs need an opaque surface over the conversation. */
   .sf.sf-overlay.modal > .sf-ov-card {
@@ -193,7 +194,7 @@ export const appearanceStyles = css`
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md h2,
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md h3,
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md h4 {
-    font-family: var(--ct-prose) !important;
+    font-family: var(--ct-prose-semibold) !important;
     font-weight: 600;
     line-height: 29px;
     margin: 10px 0 0;
@@ -657,4 +658,37 @@ export const appearanceStyles = css`
   }
   .sf.sf-el.ct-completion-action:hover { background: var(--raise); }
   .sf.sf-el.ct-completion-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* Concourse's weight grades are separate families. Keep the chosen regular
+     face on native text controls, with T6 reserved for prose emphasis. */
+  [data-role="omp.assistant"] .md,
+  [data-role="omp.assistant"] .md p,
+  [data-role="omp.assistant"] .md li,
+  [data-role="omp.assistant"] .md td,
+  [data-role="omp.user"] .md,
+  [data-role="omp.user"] .md p,
+  .ct-proposal,
+  [data-role="omp.editor"] .sf-editor,
+  [data-role="omp.editor"] .sf-ed-text,
+  [data-role="omp.composer.model"],
+  [data-role="omp.composer.effort"],
+  [data-role="ct.composer.mode"],
+  [data-role="ct.nav"],
+  [data-role="ct.nav"] .sf-seg-t,
+  [data-role="omp.working"],
+  .ct-activity,
+  .ct-activity-label,
+  .ct-activity-title,
+  .ct-reply-action {
+    font-family: var(--ct-prose) !important;
+    font-weight: 400 !important;
+  }
+  .md strong, .md b, .md h1, .md h2, .md h3, .md h4, .md th {
+    font-family: var(--ct-prose-semibold) !important;
+    font-weight: 600 !important;
+  }
+  .md code, .md pre, .ct-activity-command, .ct-activity-output {
+    font-weight: 400 !important;
+  }
+  .ct-activity-command, .ct-activity-output { font-family: var(--mono) !important; }
 `;

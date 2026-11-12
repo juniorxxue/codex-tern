@@ -86,7 +86,9 @@ On macOS, local recovery files live in `~/Library/Application Support/codex-tern
 
 ## Appearance
 
-Chat messages use Concourse T3 for Latin text and LXGW Neo XiHei (霞鹜新晰黑) for Chinese, at 17 px with a 29 px line height, 16 px between paragraphs, and a centered 736 px reading column. The input area and sidebar use the same font pair at smaller sizes. Install both font families locally for this appearance; other systems fall back to their available Chinese and UI fonts. Code keeps Tern's configured code font. The sidebar has single-line titles in 32 px rows separated by 2 px; update times appear on hover. After rebuilding, use **Reload Window** to load the client styles. With the plugin installed, `tern plugin reload` also applies the shared styles to existing clients, including older clients.
+The light theme uses an opaque white conversation background, neutral gray sidebars, and pale gray user messages. Dark mode follows Tern's existing theme.
+
+Chat messages use Concourse T4 for Latin text and LXGW Neo XiHei (霞鹜新晰黑) for Chinese, at 17 px with a 29 px line height, 16 px between paragraphs, and a centered 736 px reading column. The input area and sidebar use the same font pair at smaller sizes. Concourse T6 gives headings, bold text and selected sidebar rows more emphasis. Install Concourse T4, Concourse T6 and LXGW Neo XiHei locally for this appearance; other systems fall back to their available Chinese and UI fonts. Code keeps Tern's configured code font. The sidebar has single-line titles in 32 px rows separated by 2 px; update times appear on hover. After rebuilding, use **Reload Window** to load the client styles. With the plugin installed, `tern plugin reload` also applies the shared styles to existing clients, including older clients.
 
 Choose **Islands** in Tern’s **Change interface style** for rounded cards and spacing.
 
