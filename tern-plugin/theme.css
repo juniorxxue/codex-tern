@@ -9,21 +9,39 @@
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }
+/* Sidebars are frosted glass, like Claude Code's: a light neutral tint that lets
+   the window material's color through, blurred and saturated as Tern's panels are. */
 [data-theme="light"] .tn-pane:has([data-role="codex-tern.sessions"]) > .tn-body,
 [data-theme="light"] .tn-pane:has([data-role="codex-tern.toc"]) > .tn-body {
-  background: #ebebeb !important;
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
+  background: rgb(242 242 242 / 50%) !important;
+  backdrop-filter: blur(24px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(180%) !important;
 }
+/* Claude Code's light text colors: near-black body, neutral grays for secondary text. */
+[data-theme="light"] [data-surface="codex-tern"] .sf { --t1: #141413; --t2: #575757; --t3: #6b6b6b; }
 [data-theme="light"] [data-surface="codex-tern"] .sf-card[data-role="omp.user"] { background: transparent !important; }
 [data-theme="light"] [data-surface="codex-tern"] [data-role="omp.user"] > .sf-card-body { background: #f3f3f3 !important; }
+[data-theme="light"] [data-surface="codex-tern"] [data-role="omp.assistant"] .md .code { border-color: #e6e6e6 !important; background: #fafafa !important; }
+[data-theme="light"] [data-surface="codex-tern"] [data-role="omp.assistant"] .md .code-head { background: #fafafa !important; }
 [data-theme="light"] [data-surface="codex-tern"] [data-role="omp.editor"] > [data-role="omp.composer.line"] {
   background: #ffffff !important;
-  border-color: #d8d8d8 !important;
+  border-color: #dedede !important;
 }
+[data-theme="light"] [data-role="codex-tern.sessions"],
+[data-theme="light"] [data-role="codex-tern.toc"] { --t1: #141413; --t3: #575757; color: #141413; }
 [data-theme="light"] [data-role="codex-tern.sessions.item"]:hover,
 [data-theme="light"] [data-role="codex-tern.toc.topic"]:hover,
-[data-theme="light"] [data-role="codex-tern.toc.child"]:hover { background: #e2e2e2 !important; }
+[data-theme="light"] [data-role="codex-tern.toc.child"]:hover { background: rgb(0 0 0 / 5%) !important; }
 [data-theme="light"] [data-role="codex-tern.sessions.item"][data-mark="pick"],
 [data-theme="light"] [data-role="codex-tern.toc.topic"][data-mark="pick"],
-[data-theme="light"] [data-role="codex-tern.toc.child"][data-mark="pick"] { background: #d5d5d5 !important; }
+[data-theme="light"] [data-role="codex-tern.toc.child"][data-mark="pick"] { background: rgb(0 0 0 / 9%) !important; }
+/* Tern veils unfocused panes. Clicking a session hands focus straight back to
+   the conversation, so the sidebars would almost always sit under that veil and
+   the conversation would flash gray on every click. Keep all three looking
+   focused; other panes still dim, so focus stays visible. */
+.tn-pane:has([data-surface="codex-tern"]) .tn-veil,
+.tn-pane:has([data-role="codex-tern.sessions"]) .tn-veil,
+.tn-pane:has([data-role="codex-tern.toc"]) .tn-veil,
+.tn-pane:has([data-surface="codex-tern"]) .tn-head::after,
+.tn-pane:has([data-role="codex-tern.sessions"]) .tn-head::after,
+.tn-pane:has([data-role="codex-tern.toc"]) .tn-head::after { opacity: 0 !important; }

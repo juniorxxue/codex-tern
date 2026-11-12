@@ -86,9 +86,18 @@ On macOS, local recovery files live in `~/Library/Application Support/codex-tern
 
 ## Appearance
 
-The light theme uses an opaque white conversation background, neutral gray sidebars, and pale gray user messages. Dark mode follows Tern's existing theme.
+The light theme uses an opaque white conversation background, frosted-glass sidebars, and pale gray user messages. The sessions and topic sidebars use a 50% light tint over Tern's window material. With **Liquid Glass** or **Glass**, the desktop's color shows through, as in Claude Code's sidebar. Hovered and selected rows darken by 5% and 9%, so they read on any wallpaper. The conversation and both sidebars keep their focused look when another pane has focus. Clicking a session moves focus back to the conversation, so Tern's gray unfocused veil would otherwise cover the sidebars most of the time. Other panes in the tab still dim when unfocused. Tern always focuses the card you click, so a sidebar click briefly focuses it; the plugin returns focus to the conversation before doing anything else, and the tab keeps the conversation's title meanwhile. Dark mode follows Tern's existing theme.
 
-Chat messages use Concourse T4 for Latin text and LXGW Neo XiHei (霞鹜新晰黑) for Chinese, at 17 px with a 29 px line height, 16 px between paragraphs, and a centered 736 px reading column. The input area and sidebar use the same font pair at smaller sizes. Concourse T6 gives headings, bold text and selected sidebar rows more emphasis. Install Concourse T4, Concourse T6 and LXGW Neo XiHei locally for this appearance; other systems fall back to their available Chinese and UI fonts. Code keeps Tern's configured code font. The sidebar has single-line titles in 32 px rows separated by 2 px; update times appear on hover. After rebuilding, use **Reload Window** to load the client styles. With the plugin installed, `tern plugin reload` also applies the shared styles to existing clients, including older clients.
+The layout follows Claude Code. Chat messages are 15 px with a 23 px line height, 12 px between paragraphs and 24 px after a list, in a centered 736 px column whose running text stops 56 px short of the right edge. Text uses weight 400. Bold text and headings use the same face, thickened, so English and Chinese emphasis match each other and Claude Code's contrast. LXGW Neo XiHei has only one weight. No fonts are bundled, and each one is optional:
+
+| Text | First choice | Fallback when it isn't installed |
+|---|---|---|
+| English | Anthropic Sans Text (static cuts) or Anthropic Sans (variable) | The system UI font: SF Pro on macOS, Segoe UI on Windows |
+| Large headings | Anthropic Sans Display | The English font above |
+| Chinese | LXGW Neo XiHei (霞鹜新晰黑) | PingFang SC, Noto Sans CJK SC, Microsoft YaHei |
+| Code | SF Mono | The system monospace font, then Menlo |
+
+The sizes, spacing and weights are the same either way. Inline and block code use SF Mono. Your messages are right-aligned gray bubbles; **Fork from here** appears when you hover over a reply. The composer uses 15 px text. The sidebar has 14 px single-line titles in 32 px rows separated by 2 px, and selected rows keep regular weight; update times appear on hover. The sessions sidebar opens about 41 terminal cells wide (about 330 px at Tern's default font), capped at 30% of the window. After you drag the divider, that width applies to every window. After rebuilding, use **Reload Window** to load the client styles. With the plugin installed, `tern plugin reload` also applies the shared styles to existing clients, including older clients.
 
 Choose **Islands** in Tern’s **Change interface style** for rounded cards and spacing.
 

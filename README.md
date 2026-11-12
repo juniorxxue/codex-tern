@@ -8,7 +8,7 @@ An unofficial Codex GUI built on [Tern](https://stencil.so/tern). The official C
 
 TypeScript and Bun connect to the official `codex app-server` over stdio JSON-RPC. The [Tern Surface Protocol SDK](https://docs.stencil.so/tern/protocol/sdks.html) renders the interface natively. Your existing Codex login and configuration carry over.
 
-![Codex × Tern with a sessions sidebar and writing review.](docs/images/writing-edits.png)
+![Codex × Tern showing a conversation with the sessions and topic sidebars.](docs/images/conversation.png)
 
 ## Use it
 

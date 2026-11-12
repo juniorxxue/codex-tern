@@ -2,8 +2,10 @@
 [data-surface="codex-tern"] {
 
   .sf {
-    --ct-prose: "Concourse T4", "LXGW Neo XiHei", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif;
-    --ct-prose-semibold: "Concourse T6", "LXGW Neo XiHei", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif;
+    --ct-prose: "Anthropic Sans Text", "Anthropic Sans", system-ui, "LXGW Neo XiHei", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+    --ct-display: "Anthropic Sans Display", var(--ct-prose);
+    --ct-prose-semibold: var(--ct-prose);
+    --ct-code: "SF Mono", ui-monospace, Menlo, monospace;
   }
   /* Form dialogs need an opaque surface over the conversation. */
   .sf.sf-overlay.modal > .sf-ov-card {
@@ -120,27 +122,40 @@
     margin-right: auto;
   }
   .sf.sf-col[data-role="omp.assistant"] {
+    position: relative;
     padding: 0;
     margin-top: 0;
-    margin-bottom: 0;
+    margin-bottom: 28px;
   }
   .sf.sf-col[data-role="omp.assistant"] > .sf-md,
-  .sf.sf-card[data-role="omp.user"] > .sf-md { gap: 16px; }
-  .sf.sf-row[data-role="ct.reply.actions"] { margin-top: 8px; }
+  .sf.sf-card[data-role="omp.user"] .sf-md { gap: 12px; }
+  /* Message actions float below the reply and appear on hover, as in Claude Code. */
+  .sf.sf-row[data-role="ct.reply.actions"] {
+    position: absolute;
+    left: 0;
+    bottom: -28px;
+    margin: 0;
+    z-index: 2;
+  }
+  [data-role="ct.reply.actions"] .ct-reply-action { opacity: 0; }
+  .sf.sf-col[data-role="omp.assistant"]:hover [data-role="ct.reply.actions"] .ct-reply-action,
+  [data-role="ct.reply.actions"] .ct-reply-action:focus-visible { opacity: 1; }
   .ct-reply-action {
     display: inline-flex; align-items: center; gap: 6px;
     font-family: var(--ct-prose); font-size: 12px; line-height: 20px;
-    padding: 3px 6px; border-radius: 6px; color: var(--t3); cursor: pointer;
+    padding: 2px 6px; border: 0; border-radius: 6px; background: transparent; box-shadow: none;
+    color: var(--t3); cursor: pointer;
   }
-  .ct-reply-action:hover { color: var(--t1); background: var(--raise); }
+  .sf.sf-el.ct-reply-action { background: transparent; border: 0; box-shadow: none; }
+  .ct-reply-action:hover, .sf.sf-el.ct-reply-action:hover { color: var(--t1); background: var(--raise); }
   .ct-reply-action:focus-visible { outline: 1px solid var(--accent); }
   .ct-reply-action[aria-disabled="true"] { opacity: 0.45; cursor: default; }
   .ct-reply-action .sf-icon { width: 14px; height: 14px; }
   .sf.sf-row[data-role="ct.fork.origin"] { font-size: 12px; color: var(--t3); margin-bottom: 12px; }
   .ct-proposal {
     font-family: var(--ct-prose);
-    font-size: 17px;
-    line-height: 29px;
+    font-size: 15px;
+    line-height: 23px;
     color: var(--t1);
     margin: 8px 0;
     min-width: 0;
@@ -156,7 +171,7 @@
   .ct-proposal-apply[aria-disabled="true"] { opacity: 0.45; cursor: default; }
   .ct-proposal-apply:focus-visible, .ct-proposal-choice [role="checkbox"]:focus-visible { outline: 1px solid var(--accent); }
   .ct-proposal-prose { overflow-wrap: anywhere; }
-  .ct-proposal-paragraph + .ct-proposal-paragraph { margin-top: 16px; }
+  .ct-proposal-paragraph + .ct-proposal-paragraph { margin-top: 12px; }
   .ct-proposal-del { --t1: var(--bad); color: var(--bad); text-decoration: line-through; }
   .ct-proposal-ins { --t1: var(--sf-c-ins, var(--good)); color: var(--sf-c-ins, var(--good)); background: var(--ct-proposal-added-bg); }
   .ct-proposal { --ct-proposal-added-bg: color-mix(in srgb, var(--sf-c-ins, var(--good)) 12%, transparent); }
@@ -179,37 +194,58 @@
   }
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md {
     font-family: var(--ct-prose);
-    font-size: 17px;
-    line-height: 29px;
+    font-size: 15px;
+    line-height: 23px;
     letter-spacing: 0;
     color: var(--t1);
   }
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md p { margin: 0; }
+  /* Claude's prose flow, slightly opened for mixed scripts: 12px between blocks, twice that after a list.
+     Tern keeps a list or code block and the text after it in one .md. */
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md > * + *,
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md > * + p { margin-top: 12px; }
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md > ul + *,
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md > ol + * { margin-top: 24px; }
+  .sf.sf-col[data-role="omp.assistant"] > .sf-md > .md:has(> ul:last-child) + .md,
+  .sf.sf-col[data-role="omp.assistant"] > .sf-md > .md:has(> ol:last-child) + .md,
+  .sf.sf-col[data-role="omp.assistant"] > .sf-md > .md + .md:has(> h1),
+  .sf.sf-col[data-role="omp.assistant"] > .sf-md > .md + .md:has(> h2),
+  .sf.sf-col[data-role="omp.assistant"] > .sf-md > .md + .md:has(> h3),
+  .sf.sf-col[data-role="omp.assistant"] > .sf-md > .md + .md:has(> h4) { margin-top: 12px; }
+  /* Running text stops short of the column's right edge; code and tables keep the full width. */
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md p,
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md ul,
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md ol,
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md h1,
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md h2,
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md h3,
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md h4 { padding-right: 56px; }
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md strong,
-  .sf.sf-card[data-role="omp.user"] .sf-md .md strong { font-weight: 600; }
+  .sf.sf-card[data-role="omp.user"] .sf-md .md strong { font-weight: 400; }
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md h1,
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md h2,
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md h3,
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md h4 {
     font-family: var(--ct-prose-semibold) !important;
-    font-weight: 600;
-    line-height: 29px;
-    margin: 10px 0 0;
+    font-weight: 400;
+    margin: 0;
     letter-spacing: 0;
+    color: var(--t1);
   }
-  .sf.sf-col[data-role="omp.assistant"] .sf-md .md h1 { font-size: 22px !important; line-height: 32px; }
-  .sf.sf-col[data-role="omp.assistant"] .sf-md .md h2 { font-size: 20px !important; line-height: 30px; }
-  .sf.sf-col[data-role="omp.assistant"] .sf-md .md h3,
-  .sf.sf-col[data-role="omp.assistant"] .sf-md .md h4 { font-size: 18px !important; }
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md h1 { font-family: var(--ct-display) !important; font-size: 26px !important; line-height: 33px; }
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md h2 { font-family: var(--ct-display) !important; font-size: 21px !important; line-height: 26px; }
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md h3 { font-size: 17px !important; line-height: 22px; }
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md h4 { font-size: 15px !important; line-height: 20px; }
   .sf.sf-col[data-role="omp.assistant"] .sf-md > .md:first-child > :first-child { margin-top: 0; }
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md ul,
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md ol {
     margin: 0;
-    padding-left: 28px;
+    padding-left: 32px;
   }
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md li { margin: 0; }
-  .sf.sf-col[data-role="omp.assistant"] .sf-md .md li + li { margin-top: 6px; }
-  .sf.sf-col[data-role="omp.assistant"] .sf-md .md li p + p { margin-top: 8px; }
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md li + li { margin-top: 4px; }
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md li p + p { margin-top: 4px; }
+  .sf-md .md li::marker { color: var(--t1); }
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md blockquote {
     margin: 0;
     padding: 0 0 0 14px;
@@ -221,7 +257,7 @@
     position: relative;
     margin: 0;
     border: 1px solid var(--l2);
-    border-radius: 12px;
+    border-radius: 10px;
     background: var(--card);
     overflow: hidden;
   }
@@ -231,7 +267,7 @@
     border-radius: 0;
     box-shadow: none;
     background: transparent;
-    padding: 14px;
+    padding: 12px 16px;
     overflow-x: auto;
   }
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md .code-head {
@@ -248,18 +284,44 @@
   }
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md .code:hover .code-head,
   .sf.sf-col[data-role="omp.assistant"] .sf-md .md .code:focus-within .code-head { opacity: 1; }
-  .sf.sf-col[data-role="omp.assistant"] .sf-md .md code,
-  .sf.sf-col[data-role="omp.assistant"] .sf-md .md pre {
-    font-family: var(--mono);
-    font-size: 14px;
-    line-height: 22px;
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md pre,
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md pre code {
+    font-family: var(--ct-code);
+    font-size: 13px;
+    line-height: 21px;
   }
-  .sf.sf-col[data-role="omp.assistant"] .sf-md .md pre code { font-size: inherit; }
+  /* Inline code: a quiet gray chip in the text color. */
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md code,
+  .sf.sf-card[data-role="omp.user"] .sf-md .md code {
+    font-family: var(--ct-code);
+    font-size: 13.5px;
+    color: var(--t1);
+    background: var(--raise);
+    border: 0;
+    border-radius: 4px;
+    padding: 1px 4px;
+  }
+  .sf.sf-col[data-role="omp.assistant"] .sf-md .md pre code { font-size: 13px; background: transparent; padding: 0; }
   .sf.sf-card[data-role="omp.user"] .sf-md .md {
     font-family: var(--ct-prose);
-    font-size: 17px;
-    line-height: 29px;
+    font-size: 15px;
+    line-height: 23px;
     letter-spacing: 0;
+  }
+  /* User messages: a right-aligned bubble up to 85% of the column. */
+  .sf.sf-card[data-role="omp.user"] {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    padding: 0;
+    border: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+  .sf.sf-card[data-role="omp.user"] > .sf-card-body {
+    max-width: 85%;
+    padding: 12px 16px;
+    border-radius: 12px;
   }
   .sf.sf-col[data-role="omp.editor"],
   .sf.sf-row[data-role="omp.working"],
@@ -297,17 +359,17 @@
     transition: none;
   }
   .sf.sf-col[data-role="omp.editor"] > [data-role="omp.composer.line"] {
-    min-height: 48px;
-    padding: 11px 14px;
+    min-height: 46px;
+    padding: 11px 16px;
     border: 1px solid var(--l2);
-    border-radius: 14px;
+    border-radius: 12px;
     background: var(--card);
-    box-shadow: 0 2px 10px rgb(0 0 0 / 4%);
+    box-shadow: 0 1px 6px rgb(0 0 0 / 5%);
   }
   .sf.sf-col[data-role="omp.editor"] .sf-editor {
     font-family: var(--ct-prose);
-    font-size: 16px;
-    line-height: 26px;
+    font-size: 15px;
+    line-height: 22px;
     letter-spacing: 0;
   }
   .sf.sf-col[data-role="omp.editor"] > [data-role="omp.composer.bar"] {
@@ -339,12 +401,12 @@
     box-shadow: none;
     background: transparent;
     font-family: var(--ct-prose);
-    font-size: 12px;
+    font-size: 13px;
     line-height: 20px;
     color: var(--t2);
     cursor: pointer;
   }
-  .sf.sf-col[data-role="omp.editor"] [data-role="omp.composer.model"] { min-width: 0; max-width: 240px; }
+  .sf.sf-col[data-role="omp.editor"] [data-role="omp.composer.model"] { min-width: 0; max-width: 240px; color: var(--t1); }
   .sf.sf-col[data-role="omp.editor"] [data-role="omp.composer.model"] > .sf-text {
     min-width: 0;
     overflow: hidden;
@@ -399,7 +461,7 @@
     padding: 0 8px;
     gap: 8px;
     font-family: var(--ct-prose);
-    font-size: 11px;
+    font-size: 12px;
     line-height: 18px;
     color: var(--t3);
   }
@@ -426,18 +488,19 @@
   .sf.sf-row[data-role="ct.nav"] .sf-icon,
   .sf.sf-row[data-role="ct.nav"] .ico { width: 12px; height: 12px; }
   .sf.sf-row[data-role="ct.working"] { flex-shrink: 0; font-size: 11px; }
+  /* Reads like Claude Code's turn status: prose size, muted, chevron last. */
   .sf.sf-el.ct-activity {
     font-family: var(--ct-prose);
-    font-size: 12px;
-    line-height: 20px;
+    font-size: 15px;
+    line-height: 21px;
   }
   .sf.sf-el.ct-activity .ct-activity-toggle {
     /* Keep the summary left aligned and clear of Tern's default button skin. */
     justify-content: flex-start;
-    gap: 8px;
+    gap: 6px;
     height: auto;
-    min-height: 32px;
-    padding: 6px 0;
+    min-height: 28px;
+    padding: 4px 0;
     border: 0;
     border-radius: 6px;
     background: transparent;
@@ -447,14 +510,15 @@
     transform: none;
     transition: color 0.15s var(--ease);
   }
-  .sf.sf-el.ct-activity [data-role="ct.activity.chevron"] { width: 12px; height: 12px; flex-shrink: 0; }
+  .sf.sf-el.ct-activity [data-role="ct.activity.chevron"] { width: 12px; height: 12px; flex-shrink: 0; order: 3; }
   .sf.sf-el.ct-activity .ct-activity-indicator {
     display: flex;
     align-items: center;
     justify-content: center;
     width: 14px;
-    height: 20px;
+    height: 21px;
     flex-shrink: 0;
+    order: 1;
   }
   .sf.sf-el.ct-activity .ct-activity-indicator .sf-icon,
   .sf.sf-el.ct-activity .ct-activity-indicator .ico { width: 13px; height: 13px; }
@@ -462,13 +526,14 @@
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
-    gap: 0 8px;
+    gap: 0 5px;
     min-width: 0;
+    order: 2;
   }
-  .sf.sf-el.ct-activity [data-role="ct.activity.state"] { color: var(--t2); font-weight: 500; }
-  .sf.sf-el.ct-activity [data-role="ct.activity.meta"] { color: var(--t3); }
+  .sf.sf-el.ct-activity [data-role="ct.activity.state"],
+  .sf.sf-el.ct-activity [data-role="ct.activity.meta"] { color: var(--t3); font-size: 15px; line-height: 21px; }
   .sf.sf-el.ct-activity .ct-activity-preview {
-    margin: 0 0 4px 27px;
+    margin: 0 0 4px 20px;
     padding: 2px 0 2px 14px;
     color: var(--t3);
   }
@@ -656,15 +721,21 @@
   .sf.sf-el.ct-completion-action:hover { background: var(--raise); }
   .sf.sf-el.ct-completion-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-  /* Concourse's weight grades are separate families. Keep the chosen regular
-     face on native text controls, with T6 reserved for prose emphasis. */
+  /* Regular 400 everywhere: Claude's 360 reads thin on the system font and
+     next to LXGW Neo XiHei. Emphasis is the same regular face, thickened
+     (CoreText smoothing): LXGW has one weight, and this makes English and
+     Chinese bold about 1.3x as dark as body text, matching Claude Code's
+     bold. A heavier English face on top of thickening reads too bold. */
   [data-role="omp.assistant"] .md,
   [data-role="omp.assistant"] .md p,
   [data-role="omp.assistant"] .md li,
   [data-role="omp.assistant"] .md td,
   [data-role="omp.user"] .md,
   [data-role="omp.user"] .md p,
-  .ct-proposal,
+  .ct-proposal {
+    font-family: var(--ct-prose) !important;
+    font-weight: 400 !important;
+  }
   [data-role="omp.editor"] .sf-editor,
   [data-role="omp.editor"] .sf-ed-text,
   [data-role="omp.composer.model"],
@@ -682,7 +753,8 @@
   }
   .md strong, .md b, .md h1, .md h2, .md h3, .md h4, .md th {
     font-family: var(--ct-prose-semibold) !important;
-    font-weight: 600 !important;
+    font-weight: 400 !important;
+    -stencil-font-thicken: 255;
   }
   .md code, .md pre, .ct-activity-command, .ct-activity-output {
     font-weight: 400 !important;

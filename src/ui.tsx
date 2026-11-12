@@ -823,7 +823,6 @@ export class NativeUI {
       toc: c.outline && { ...c.outline,
         error: this.tocError && this.tocError.threadId === c.thread?.id ? this.tocError.message : c.outline.error,
         location: this.tocLocation?.threadId === c.thread?.id ? this.tocLocation : undefined },
-      cellWidth: this.session.caps.cell.w,
       rows: this.folderSessions.snapshot.rows.map(row => ({ ...row, canArchive: row.canArchive && !this.hasSessionDraft(row.id) })),
       archiveProtocol: 1, renameProtocol: 1, navigationProtocol: 1, newSessionProtocol: 1,
       reloadProtocol: this.reloadWindow ? 1 : undefined, uiGeneration: this.generation, navigation: this.sidebarNavigation })}

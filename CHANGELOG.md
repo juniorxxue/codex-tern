@@ -6,12 +6,16 @@ Notable changes, newest first. This log starts with the update below.
 
 ### Changed
 
-- The light theme uses an opaque white conversation background, neutral gray sidebars and pale gray user messages.
-- Slightly heavier text across conversations, the composer and sidebars improves readability, with stronger headings and selected rows.
+- The light theme uses an opaque white conversation background, frosted-glass sidebars that let the window material's color show through (as in Claude Code), and pale gray user messages.
+- Conversations follow Claude Code's layout: 15 px text with 23 px lines, tighter paragraph and list spacing, dark headings and bullets, gray inline code chips, and lines that stop short of the column edge. English uses Anthropic Sans Text (or the variable Anthropic Sans) when installed, otherwise the system font. Chinese keeps LXGW Neo XiHei, falling back to PingFang SC. Regular text uses weight 400. Bold text is thickened rather than set in a heavier face, so English and Chinese emphasis match Claude Code's.
+- Your messages appear as right-aligned gray bubbles. The Activity summary reads like a muted status line with the chevron at the end, and **Fork from here** appears when you hover over a reply.
+- Sidebars use 14 px rows with regular-weight titles, including the selected one. The composer uses 15 px text and 13 px model controls.
+- The sessions sidebar opens wider by default (about 330 px, as in Claude Code). It previously opened at about half its intended width on Retina displays. A width you set yourself is kept.
 - Queued messages use OMP's compact rows above the composer, with a queue icon, single-line preview, inline controls and a shared count or paused badge. The old collapsible heading and explanatory footer are removed.
 
 ### Fixed
 
+- The sessions and topic sidebars keep their glass look while you type in the conversation, instead of graying over whenever another pane has focus. Clicking a session hands focus straight back to the conversation without a gray flash, and the tab keeps the conversation's title instead of briefly showing "Sessions".
 - Question panels use the theme's fonts for prompts, choices, custom answers and buttons, including in chats already running.
 - Restored the Activity summary's transparent background and left-aligned text so it no longer appears as a full-width gray button.
 

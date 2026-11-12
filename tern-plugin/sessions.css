@@ -2,28 +2,24 @@
   padding: 14px 8px;
   gap: 2px;
   font-size: 14px;
-  line-height: 22px;
+  line-height: 20px;
 }
+/* Claude Code's sidebar: 14/20, regular weight even when selected. Latin in
+   Anthropic Sans or the system font, Chinese in LXGW Neo XiHei. */
 [data-role="codex-tern.sessions"], [data-role="codex-tern.toc"],
 [data-role="codex-tern.sessions"] .sf-text, [data-role="codex-tern.toc"] .sf-text {
-  font-family: "Concourse T4", "LXGW Neo XiHei", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif !important;
+  font-family: "Anthropic Sans Text", "Anthropic Sans", system-ui, "LXGW Neo XiHei", "PingFang SC", "Noto Sans CJK SC", sans-serif !important;
   font-weight: 400 !important;
 }
-[data-role="codex-tern.sessions.item"][data-mark="pick"] .sf-text,
-[data-role="codex-tern.toc.topic"][data-mark="pick"] .sf-text,
-[data-role="codex-tern.toc.child"][data-mark="pick"] .sf-text {
-  font-family: "Concourse T6", "LXGW Neo XiHei", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif !important;
-  font-weight: 600 !important;
-}
 [data-role="codex-tern.sessions.folder"] {
-  padding: 2px 6px 12px;
+  padding: 2px 9px 10px;
   color: var(--t3);
-  font-size: 12px;
+  font-size: 13px;
 }
 [data-role="codex-tern.sessions.new"] {
-  padding: 6px;
+  padding: 6px 9px;
   margin-bottom: 12px;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
   cursor: pointer;
 }
@@ -32,8 +28,8 @@
 [data-role="codex-tern.sessions.new"][data-mark="disabled"] { opacity: 0.5; cursor: default; }
 [data-role="codex-tern.sessions.item"],
 [data-role="codex-tern.toc.topic"], [data-role="codex-tern.toc.child"] {
-  padding: 5px 6px;
-  border-radius: 7px;
+  padding: 6px 9px;
+  border-radius: 8px;
   gap: 0;
   transition: none;
 }
@@ -49,10 +45,10 @@
 [data-role="codex-tern.sessions.running"] { width: 13px; height: 13px; flex-shrink: 0; color: var(--t3); }
 [data-role="codex-tern.sessions.title"] {
   min-width: 0;
-  height: 22px;
+  height: 20px;
   overflow: hidden;
   font-size: 14px;
-  line-height: 22px;
+  line-height: 20px;
 }
 [data-role="codex-tern.sessions.reveal"] {
   position: relative;
@@ -70,7 +66,7 @@
   position: absolute;
   top: 0;
   width: 24px;
-  height: 22px;
+  height: 20px;
   opacity: 0;
   background:
     radial-gradient(circle at 3px 6px, var(--t2) 0 1px, transparent 1.6px),
@@ -104,7 +100,7 @@
 [data-role="codex-tern.toc"] {
   gap: 2px;
 }
-[data-role="codex-tern.toc.head"] { padding: 2px 6px 12px; color: var(--t3); font-size: 12px; }
+[data-role="codex-tern.toc.head"] { padding: 2px 9px 10px; color: var(--t3); font-size: 13px; }
 [data-role="codex-tern.toc.head"] > .sf-icon { width: 14px; height: 14px; color: var(--t3); }
 [data-role="codex-tern.toc.status"] { font-size: 12px; color: var(--t3); }
 [data-role="codex-tern.toc.body"] { gap: 2px; }
@@ -112,11 +108,11 @@
   min-width: 0; gap: 6px; cursor: pointer;
 }
 [data-role="codex-tern.toc.child"] { padding-left: 26px; }
-[data-role="codex-tern.toc.fold"] { width: 14px; height: 22px; color: var(--t3); flex-shrink: 0; cursor: pointer; }
+[data-role="codex-tern.toc.fold"] { width: 14px; height: 20px; color: var(--t3); flex-shrink: 0; cursor: pointer; }
 [data-role="codex-tern.toc.link"] { min-width: 0; cursor: pointer; }
 [data-role="codex-tern.toc.label"] { min-width: 0; max-width: 100%; }
 [data-role="codex-tern.toc.visits"] {
-  flex-shrink: 0; color: var(--t3); font-size: 12px; line-height: 22px; cursor: pointer;
+  flex-shrink: 0; color: var(--t3); font-size: 12px; line-height: 20px; cursor: pointer;
   padding: 0 4px; border-radius: 7px;
 }
 [data-role="codex-tern.toc.visits"]:hover { background: var(--raise); }

@@ -42,8 +42,11 @@ function widths.initialize(cx, pane, entry, snapshot)
   local ok, saved = preference()
   -- Only brand-new panes use the default. Restored panes keep their existing
   -- width when no preference has been saved yet.
-  local window_width = (snapshot.cols or 120) * (snapshot.cellWidth or 8)
-  local desired = saved or math.min(0.30, 420 / window_width)
+  -- Size the default in cells, which is how Tern resizes. The client reports
+  -- the full window's columns before this pane splits off; 41 cells match
+  -- Claude Code's ~330 px sidebar at Tern's default font. (Tern's cell width
+  -- is in device pixels, so pixel math halves the width on Retina screens.)
+  local desired = saved or math.min(0.30, 41 / (snapshot.cols or 120))
   entry.width_ratio = apply(cx, pane, desired, ratio(cx, pane))
   if ok then entry.width_preference = saved end
 end

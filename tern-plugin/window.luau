@@ -5,6 +5,8 @@ local widths = require("./sidebar-width")
 local reading = require("./reading-position")
 local outline = require("./outline-panel")
 local panels = {}
+-- The conversation's tab label, by conversation pane, for the tab-title hook below.
+local conversation_titles = {}
 local timer = nil
 local width_timer = nil
 local fast_until = 0
@@ -217,7 +219,15 @@ local function watch_widths()
   -- from content polling, including when the Codex client has been closed.
   width_timer = tern.timer(200, function(cx)
     width_timer = nil
-    if cx then widths.sync(cx, panels) end
+    if cx then
+      widths.sync(cx, panels)
+      -- Tern caches tab titles, so know the conversation's label before a
+      -- sidebar card is ever focused rather than learning it from the hook.
+      for _, entry in panels do
+        local info = cx.session:pane(entry.target)
+        if info and info.title and info.title ~= "" then conversation_titles[entry.target] = info.title end
+      end
+    end
     watch_widths()
   end)
 end
@@ -327,8 +337,17 @@ tern.command({id = "reload", title = "Codex: Reload Window", icon = "app-codex",
   send(cx, target, "reload")
 end})
 
+-- Tern has no non-focusable canvas: a click focuses the card it lands on.
+-- The sidebars never keep focus, so hand it straight back to the
+-- conversation before doing any work, keeping the focus visit as short as possible.
+local function sidebar_target(pane)
+  return (panels[pane] and panels[pane].target) or outline.target(pane)
+end
+
 tern.on("canvas_action", function(ev, cx)
   remember(cx)
+  local owner = sidebar_target(ev.pane)
+  if owner and cx.session:pane(owner) then cx.layout:focus(owner) end
   if outline.action(ev, cx, bridge, send) then poll(true); return true end
   local entry = panels[ev.pane]
   if not entry then return true end
@@ -417,6 +436,7 @@ tern.on("canvas_action", function(ev, cx)
 end)
 
 tern.on("pane_closed", function(ev, cx)
+  conversation_titles[ev.pane] = nil
   outline.closed(ev.pane)
   local entry = panels[ev.pane]
   if entry then send(cx, entry.target, "hide"); panels[ev.pane] = nil end
@@ -429,6 +449,20 @@ local function restore(cx)
   for pane, entry in panels do update(cx, pane, entry) end
   following_outline = outline.update(cx, bridge)
   poll()
+end
+
+-- While a sidebar card has focus for that moment, label its tab with the
+-- conversation's title instead of "Sessions" so the tab does not flicker.
+-- Tabs without a Codex sidebar keep Tern's default label (nil).
+if tern.chrome and tern.chrome.tab_title then
+  tern.chrome.tab_title(function(tab)
+    local target = sidebar_target(tab.pane)
+    if target then return conversation_titles[target] end
+    for _, entry in panels do
+      if entry.target == tab.pane then conversation_titles[tab.pane] = tab.title; break end
+    end
+    return nil
+  end)
 end
 
 tern.on("window_start", restore)
